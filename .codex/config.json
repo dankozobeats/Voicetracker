@@ -1,0 +1,29 @@
+{
+  "project": "VoiceTrack",
+  "description": "Voice-based expense tracker built with Next.js, Tailwind, Supabase, Whisper and Groq.",
+  "language": "typescript",
+  "rules": {
+    "framework": "next14+app-router",
+    "style": "tailwind",
+    "architecture": "modular",
+    "security": "strict",
+    "typing": "strict",
+    "outputs": "files",
+    "comments": "detailed",
+    "no_placeholders": true
+  },
+  "agents": {
+    "core": "./agents/core.md",
+    "architect": "./agents/architect.md",
+    "analyst": "./agents/analyst.md",
+    "scribe": "./agents/scribe.md"
+  },
+  "workflow": {
+    "default": [
+      "architect.analyze",
+      "core.generate",
+      "analyst.test",
+      "scribe.update_docs"
+    ]
+  }
+}

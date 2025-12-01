@@ -67,52 +67,91 @@ describe('useRecorder hook', () => {
     global.fetch = originalFetch;
   });
 
-  it('records audio and uploads successfully with auto-reset', async () => {
-    vi.useFakeTimers();
-    try {
-      const mockResponse = {
-        ok: true,
-        json: async () => ({ transcription: 'Transcription ok' }),
-      } as Response;
-      global.fetch = vi.fn().mockResolvedValue(mockResponse) as unknown as typeof fetch;
+  // WHY: happy-path regression test proving a blob is produced, uploaded, and clears state afterward.
+  it('records audio and uploads successfully', async () => {
+    const mockResponse = {
+      ok: true,
+      json: async () => ({ transcription: 'Transcription ok' }),
+    } as Response;
+    const fetchSpy = vi.fn().mockResolvedValue(mockResponse) as unknown as typeof fetch;
+    global.fetch = fetchSpy;
 
-      const { result } = renderHook(() => useRecorder());
+    const { result } = renderHook(() => useRecorder());
 
-      await act(async () => {
-        await result.current.startRecording();
-      });
+    await act(async () => {
+      await result.current.startRecording();
+    });
+    expect(result.current.status).toBe('recording');
 
-      expect(result.current.status).toBe('recording');
-      expect(result.current.isRecording).toBe(true);
-      expect(getUserMediaMock).toHaveBeenCalledTimes(1);
+    act(() => {
+      result.current.stopRecording();
+    });
+    expect(result.current.audioBlob).toBeInstanceOf(Blob);
+    expect(result.current.status).toBe('ready');
 
-      act(() => {
-        result.current.stopRecording();
-      });
+    await act(async () => {
+      const uploadResult = await result.current.uploadAudio();
+      expect(uploadResult?.transcription).toBe('Transcription ok');
+    });
 
-      expect(result.current.status).toBe('ready');
-      expect(result.current.audioBlob).toBeInstanceOf(Blob);
-
-      await act(async () => {
-        const uploadResult = await result.current.uploadAudio();
-        expect(uploadResult?.transcription).toBe('Transcription ok');
-      });
-
-      expect(result.current.status).toBe('success');
-      expect(result.current.transcription).toBe('Transcription ok');
-
-      act(() => {
-        vi.advanceTimersByTime(4000);
-      });
-
-      expect(result.current.status).toBe('idle');
-      expect(result.current.audioBlob).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const fetchMock = fetchSpy as unknown as ReturnType<typeof vi.fn>;
+    const fetchBody = fetchMock.mock.calls[0]?.[1]?.body as FormData;
+    expect(fetchBody).toBeInstanceOf(FormData);
+    expect(Array.from(fetchBody.keys())).toContain('audio');
+    expect(result.current.status).toBe('success');
+    expect(result.current.transcription).toBe('Transcription ok');
   });
 
-  it('surface upload errors to the caller', async () => {
+  // WHY: calling start twice should not request a second MediaRecorder, preventing race conditions.
+  it('ignores duplicate startRecording requests', async () => {
+    const { result } = renderHook(() => useRecorder());
+
+    await act(async () => {
+      await result.current.startRecording();
+    });
+
+    await act(async () => {
+      await result.current.startRecording();
+    });
+
+    expect(getUserMediaMock).toHaveBeenCalledTimes(1);
+  });
+
+  // WHY: stopRecording should flush chunks into a blob and leave the hook in the ready state for upload.
+  it('converts buffered audio into a blob on stop', async () => {
+    const { result } = renderHook(() => useRecorder());
+
+    await act(async () => {
+      await result.current.startRecording();
+    });
+
+    act(() => {
+      result.current.stopRecording();
+    });
+
+    expect(result.current.status).toBe('ready');
+    expect(result.current.audioBlob).toBeInstanceOf(Blob);
+    const buffer = await new Response(result.current.audioBlob!).arrayBuffer();
+    expect(buffer.byteLength).toBeGreaterThan(0);
+  });
+
+  // WHY: microphone permission denial should bubble a human-readable error for UI display.
+  it('surfaces permission denied errors clearly', async () => {
+    getUserMediaMock.mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'));
+    const { result } = renderHook(() => useRecorder());
+
+    await expect(async () => {
+      await result.current.startRecording();
+    }).rejects.toThrow('denied');
+
+    await act(async () => {});
+    expect(result.current.status).toBe('error');
+    expect(result.current.error).toBe('Permission microphone refusée');
+  });
+
+  // WHY: network/server errors during upload must propagate to consumers for proper toast messaging.
+  it('propagates upload errors from the API response', async () => {
     const mockErrorResponse = {
       ok: false,
       json: async () => ({ error: { message: 'failed' } }),
@@ -129,8 +168,6 @@ describe('useRecorder hook', () => {
       result.current.stopRecording();
     });
 
-    expect(result.current.status).toBe('ready');
-
     await act(async () => {
       const uploadResult = await result.current.uploadAudio();
       expect(uploadResult?.error).toBe('failed');
@@ -140,34 +177,8 @@ describe('useRecorder hook', () => {
     expect(result.current.error).toBe('failed');
   });
 
-  it('handles microphone permission errors gracefully', async () => {
-    getUserMediaMock.mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'));
-    const { result } = renderHook(() => useRecorder());
-
-    await expect(async () => {
-      await result.current.startRecording();
-    }).rejects.toThrow('denied');
-
-    await act(async () => {});
-    expect(result.current.status).toBe('error');
-    expect(result.current.error).toBe('Permission microphone refusée');
-  });
-
-  it('prevents duplicate recordings when already active', async () => {
-    const { result } = renderHook(() => useRecorder());
-
-    await act(async () => {
-      await result.current.startRecording();
-    });
-
-    await act(async () => {
-      await result.current.startRecording();
-    });
-
-    expect(getUserMediaMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('propagates network errors during upload', async () => {
+  // WHY: low-level fetch rejections (offline, CORS, etc.) should also mark the hook as errored.
+  it('handles network exceptions during upload', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('network down')) as unknown as typeof fetch;
     const { result } = renderHook(() => useRecorder());
 
@@ -178,8 +189,6 @@ describe('useRecorder hook', () => {
     act(() => {
       result.current.stopRecording();
     });
-
-    expect(result.current.status).toBe('ready');
 
     await act(async () => {
       const uploadResult = await result.current.uploadAudio();

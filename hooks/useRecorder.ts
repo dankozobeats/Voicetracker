@@ -61,6 +61,7 @@ export default function useRecorder(): UseRecorderReturn {
     try {
       setError(null);
       setTranscription(null);
+      setAudioBlob(null);
       setStatus('idle');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -76,8 +77,14 @@ export default function useRecorder(): UseRecorderReturn {
 
       recorder.addEventListener('stop', () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        setAudioBlob(blob);
-        setStatus('ready');
+        if (blob.size === 0) {
+          setAudioBlob(null);
+          setStatus('idle');
+          debug('Recording stopped before audio chunk was captured');
+        } else {
+          setAudioBlob(blob);
+          setStatus('ready');
+        }
         cleanupStream();
       });
 

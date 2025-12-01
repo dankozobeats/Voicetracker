@@ -22,7 +22,7 @@ interface UseRecorderReturn {
 }
 
 /**
- * useRecorder encapsulates MediaRecorder usage and the `/api/voice` upload flow.
+ * useRecorder encapsulates MediaRecorder usage and the `/api/transcribe` upload flow.
  * It returns helpers to start/stop recording and to upload the recorded blob.
  */
 const debug = (...args: unknown[]) => {
@@ -48,6 +48,22 @@ export default function useRecorder(): UseRecorderReturn {
     streamRef.current = null;
   };
 
+  const detectMimeType = () => {
+    if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+      return 'audio/webm';
+    }
+
+    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+      return 'audio/webm;codecs=opus';
+    }
+
+    if (MediaRecorder.isTypeSupported('audio/mp4')) {
+      return 'audio/mp4';
+    }
+
+    return 'audio/webm';
+  };
+
   const startRecording = useCallback(async () => {
     if (typeof navigator === 'undefined') {
       throw new Error('Recording is only available in the browser');
@@ -63,9 +79,27 @@ export default function useRecorder(): UseRecorderReturn {
       setTranscription(null);
       setAudioBlob(null);
       setStatus('idle');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setError('Votre navigateur ne supporte pas l\'enregistrement audio.');
+        setStatus('error');
+        return;
+      }
+
+      // Enhanced mobile permissions request
+      const constraints = {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 44100,
+        },
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
-      const recorder = new MediaRecorder(stream);
+      const mimeType = detectMimeType();
+      const recorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = recorder;
       chunksRef.current = [];
 
@@ -76,7 +110,8 @@ export default function useRecorder(): UseRecorderReturn {
       });
 
       recorder.addEventListener('stop', () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const preferredType = recorder.mimeType?.startsWith('audio/mp4') ? 'audio/mp4' : 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type: preferredType });
         if (blob.size === 0) {
           setAudioBlob(null);
           setStatus('idle');
@@ -88,7 +123,7 @@ export default function useRecorder(): UseRecorderReturn {
         cleanupStream();
       });
 
-      recorder.start();
+      recorder.start(100); // Collect data every 100ms
       setIsRecording(true);
       setStatus('recording');
       debug('Recording started');
@@ -96,7 +131,11 @@ export default function useRecorder(): UseRecorderReturn {
       cleanupStream();
       const message = err instanceof Error ? err.message : 'Impossible de démarrer l\'enregistrement';
       if (err instanceof DOMException && err.name === 'NotAllowedError') {
-        setError('Permission microphone refusée');
+        setError('Permission microphone refusée. Vérifiez les paramètres de votre navigateur.');
+      } else if (err instanceof DOMException && err.name === 'NotFoundError') {
+        setError('Aucun microphone détecté. Vérifiez votre matériel audio.');
+      } else if (err instanceof DOMException && err.name === 'NotSupportedError') {
+        setError('Votre navigateur ne supporte pas l\'enregistrement audio.');
       } else {
         setError(message);
       }
@@ -153,13 +192,13 @@ export default function useRecorder(): UseRecorderReturn {
     setError(null);
 
     try {
-      const file = new File([audioBlob], 'recording.webm', { type: audioBlob.type || 'audio/webm' });
-      const formData = new FormData();
-      formData.append('audio', file);
+      const normalizedBlob = audioBlob.type
+        ? audioBlob
+        : new Blob([audioBlob], { type: 'audio/webm' });
 
-      const response = await fetch('/api/voice', {
+      const response = await fetch('/api/transcribe', {
         method: 'POST',
-        body: formData,
+        body: normalizedBlob,
       });
 
       const payload = await response.json();
@@ -171,7 +210,7 @@ export default function useRecorder(): UseRecorderReturn {
         return { transcription: null, error: message };
       }
 
-      setTranscription(payload.transcription ?? null);
+      setTranscription(payload.text ?? payload.transcription ?? null);
       setAudioBlob(null);
       setStatus('success');
       resetTimerRef.current = setTimeout(() => {

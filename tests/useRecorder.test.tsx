@@ -96,9 +96,10 @@ describe('useRecorder hook', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const fetchMock = fetchSpy as unknown as ReturnType<typeof vi.fn>;
-    const fetchBody = fetchMock.mock.calls[0]?.[1]?.body as FormData;
-    expect(fetchBody).toBeInstanceOf(FormData);
-    expect(Array.from(fetchBody.keys())).toContain('audio');
+    const fetchCall = fetchMock.mock.calls[0];
+    expect(fetchCall?.[0]).toBe('/api/transcribe');
+    expect(fetchCall?.[1]?.method).toBe('POST');
+    expect(fetchCall?.[1]?.body).toBeInstanceOf(Blob);
     expect(result.current.status).toBe('success');
     expect(result.current.transcription).toBe('Transcription ok');
   });
@@ -147,7 +148,7 @@ describe('useRecorder hook', () => {
 
     await act(async () => {});
     expect(result.current.status).toBe('error');
-    expect(result.current.error).toBe('Permission microphone refusée');
+    expect(result.current.error).toBe('Permission microphone refusée. Vérifiez les paramètres de votre navigateur.');
   });
 
   // WHY: network/server errors during upload must propagate to consumers for proper toast messaging.

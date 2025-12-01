@@ -45,8 +45,31 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const contentType = request.headers.get('content-type');
-    if (contentType && !contentType.includes('multipart/form-data')) {
-      return errorResponse('Content-Type must be multipart/form-data', 400, undefined, rateLimitHeaders);
+    
+    // Handle direct audio blob upload
+    if (contentType && contentType.startsWith('audio/')) {
+      const audioBuffer = await request.arrayBuffer();
+      const audioBlob = new Blob([audioBuffer], { type: contentType });
+      
+      if (audioBuffer.byteLength === 0) {
+        return errorResponse('audio file is empty', 400, undefined, rateLimitHeaders);
+      }
+
+      if (audioBuffer.byteLength > MAX_AUDIO_BYTES) {
+        return errorResponse('audio file exceeds 5MB', 413, undefined, rateLimitHeaders);
+      }
+
+      const normalizedType = contentType.split(';')[0]?.toLowerCase();
+      if (!ALLOWED_AUDIO_TYPES.has(normalizedType)) {
+        return errorResponse(`unsupported audio format: ${normalizedType}`, 415, undefined, rateLimitHeaders);
+      }
+
+      return processAudio(audioBlob, rateLimitHeaders);
+    }
+
+    // Handle multipart/form-data upload
+    if (!contentType || !contentType.includes('multipart/form-data')) {
+      return errorResponse('Content-Type must be multipart/form-data or audio/*', 400, undefined, rateLimitHeaders);
     }
 
     const formData = await request.formData();
@@ -78,55 +101,59 @@ export async function POST(request: Request): Promise<Response> {
       return errorResponse(`unsupported audio format: ${normalizedType}`, 415, undefined, rateLimitHeaders);
     }
 
-    let transcription: string;
-    try {
-      transcription = await transcribeAudio(audio);
-    } catch (err) {
-      if (err instanceof Error && err.message.toLowerCase().includes('empty transcription')) {
-        return errorResponse('Transcription is empty', 422, undefined, rateLimitHeaders);
-      }
-      throw err;
-    }
-
-    if (!transcription?.trim()) {
-      return errorResponse('Transcription is empty', 422, undefined, rateLimitHeaders);
-    }
-
-    let parsedExpense;
-    try {
-      parsedExpense = await parseExpenseWithGroq(transcription);
-    } catch (error) {
-      console.error('[api/voice] Groq parsing failed', error);
-      const message = error instanceof Error ? error.message : 'Unable to parse transcription';
-      return errorResponse(message, 422, undefined, rateLimitHeaders);
-    }
-
-    let expense;
-    try {
-      expense = expenseInsertSchema.parse({
-        ...parsedExpense,
-        raw_transcription: transcription,
-      });
-    } catch (error) {
-      if (error instanceof ZodError) {
-        return errorResponse('Validation failed', 422, error.errors, rateLimitHeaders);
-      }
-      throw error;
-    }
-
-    const supabase = getServerSupabaseClient();
-    const { data, error } = await supabase.from('expenses').insert([expense]).select().single();
-
-    if (error) {
-      console.error('[api/voice] Supabase insert failed', error);
-      return errorResponse('Database insertion failed', 500, undefined, rateLimitHeaders);
-    }
-
-    const payload = apiResponseSchema.parse({ expense: data, transcription });
-    return jsonResponse(payload, 201, rateLimitHeaders);
+    return processAudio(audio, rateLimitHeaders);
   } catch (error) {
     console.error('[api/voice] Unexpected server error', error);
     const message = error instanceof Error ? error.message : 'Unexpected server error';
     return errorResponse(message, 500, undefined, rateLimitHeaders);
   }
+}
+
+async function processAudio(audio: Blob, rateLimitHeaders?: Record<string, string>): Promise<Response> {
+  let transcription: string;
+  try {
+    transcription = await transcribeAudio(audio);
+  } catch (err) {
+    if (err instanceof Error && err.message.toLowerCase().includes('empty transcription')) {
+      return errorResponse('Transcription is empty', 422, undefined, rateLimitHeaders);
+    }
+    throw err;
+  }
+
+  if (!transcription?.trim()) {
+    return errorResponse('Transcription is empty', 422, undefined, rateLimitHeaders);
+  }
+
+  let parsedExpense;
+  try {
+    parsedExpense = await parseExpenseWithGroq(transcription);
+  } catch (error) {
+    console.error('[api/voice] Groq parsing failed', error);
+    const message = error instanceof Error ? error.message : 'Unable to parse transcription';
+    return errorResponse(message, 422, undefined, rateLimitHeaders);
+  }
+
+  let expense;
+  try {
+    expense = expenseInsertSchema.parse({
+      ...parsedExpense,
+      raw_transcription: transcription,
+    });
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return errorResponse('Validation failed', 422, error.errors, rateLimitHeaders);
+    }
+    throw error;
+  }
+
+  const supabase = getServerSupabaseClient();
+  const { data, error } = await supabase.from('expenses').insert([expense]).select().single();
+
+  if (error) {
+    console.error('[api/voice] Supabase insert failed', error);
+    return errorResponse('Database insertion failed', 500, undefined, rateLimitHeaders);
+  }
+
+  const payload = apiResponseSchema.parse({ expense: data, transcription });
+  return jsonResponse(payload, 201, rateLimitHeaders);
 }

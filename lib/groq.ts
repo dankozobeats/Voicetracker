@@ -10,10 +10,9 @@ const allowedCategories = 'restaurant,courses,transport,loisirs,santé,shopping,
  * Calls the configured Groq endpoint with a strict prompt and validates the JSON it returns.
  */
 export async function parseExpenseWithGroq(transcription: string): Promise<GroqExpense> {
-  const url = process.env.GROQ_API_URL;
   const key = process.env.GROQ_API_KEY;
 
-  if (!url || !key) throw new Error('GROQ_API_URL and GROQ_API_KEY must be set');
+  if (!key) throw new Error('GROQ_API_KEY must be set');
 
   const sanitizedInput = transcription?.trim();
   if (!sanitizedInput) {
@@ -38,13 +37,21 @@ Le JSON doit respecter ce schéma:
 RENVOIE UNIQUEMENT CE JSON.
 `;
 
-  const response = await fetch(url, {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({
+      model: 'llama-3.1-70b-versatile',
+      messages: [{
+        role: 'user',
+        content: prompt
+      }],
+      temperature: 0.3,
+      response_format: { type: 'json_object' }
+    }),
   });
 
   if (!response.ok) {
@@ -52,14 +59,16 @@ RENVOIE UNIQUEMENT CE JSON.
     throw new Error(`Groq API error: ${errorText}`);
   }
 
-  const body = (await response.text()).trim();
-  if (!body) {
+  const data = await response.json();
+  
+  if (!data.choices?.[0]?.message?.content) {
     throw new Error('Groq returned an empty response');
   }
 
+  const content = data.choices[0].message.content.trim();
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body);
+    parsed = JSON.parse(content);
   } catch (error) {
     throw new Error('Groq did not return valid JSON');
   }

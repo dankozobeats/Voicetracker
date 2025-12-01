@@ -111,6 +111,27 @@ La page d'enregistrement vocal est disponible à `/record`. Elle utilise la comp
 
 Voir `docs/03-api-documentation.md` pour la documentation de l'endpoint qui accepte un `multipart/form-data` contenant `audio` et retourne `{ expense, transcription }`.
 
+## ⚙️ Notes d'intégration & sécurité
+
+- **Server-side inserts:** All inserts to `expenses` performed by `/api/voice` use the `SUPABASE_SERVICE_ROLE_KEY` via `getServerSupabaseClient()` (`lib/supabase.ts`). Ensure this key is kept secret and set only in Vercel/Production envs.
+- **Client usage:** Client-side code should only use public keys (`NEXT_PUBLIC_SUPABASE_ANON_KEY`).
+
+## 🧪 Tests
+
+This repository uses Vitest for unit tests. Tests mock external services (Whisper, Groq, Supabase) so they can run offline.
+
+Run tests:
+
+```bash
+npm run test
+```
+
+If Vitest or testing utilities are not installed, add them:
+
+```bash
+npm install -D vitest @testing-library/react jsdom whatwg-fetch
+```
+
 ## 🗂️ Structure du projet
 
 ```

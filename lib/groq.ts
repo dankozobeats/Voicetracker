@@ -1,34 +1,68 @@
+import { groqExpenseSchema, GroqExpense } from '@/lib/schemas';
+
+const DEFAULT_SYSTEM_PROMPT = `Vous êtes un extracteur JSON strict.
+Vous recevez la transcription textuelle (en français) d'une dépense.
+Vous devez retourner uniquement un objet JSON, sans texte avant/après ni commentaires.`;
+
+const allowedCategories = 'restaurant,courses,transport,loisirs,santé,shopping,autre';
+
 /**
- * parseExpenseWithGroq
- * - Sends transcription text to Groq (or any LLM service configured) and returns a parsed JSON object.
- * - The implementation uses a simple fetch to `process.env.GROQ_API_URL` and is intended to be mocked in tests.
+ * Calls the configured Groq endpoint with a strict prompt and validates the JSON it returns.
  */
-export async function parseExpenseWithGroq(transcription: string): Promise<unknown> {
+export async function parseExpenseWithGroq(transcription: string): Promise<GroqExpense> {
   const url = process.env.GROQ_API_URL;
   const key = process.env.GROQ_API_KEY;
 
-  if (!url || !key) {
-    throw new Error('GROQ_API_URL or GROQ_API_KEY not set');
+  if (!url || !key) throw new Error('GROQ_API_URL and GROQ_API_KEY must be set');
+
+  const sanitizedInput = transcription?.trim();
+  if (!sanitizedInput) {
+    throw new Error('Transcription is empty and cannot be parsed');
   }
 
-  const res = await fetch(url, {
+  const prompt = `
+${DEFAULT_SYSTEM_PROMPT}
+
+Transcription:
+${JSON.stringify(sanitizedInput)}
+
+Le JSON doit respecter ce schéma:
+{
+  "amount": nombre strictement positif (euros),
+  "category": enum(${allowedCategories}),
+  "description": chaîne optionnelle (<= 200 caractères),
+  "expense_date": chaîne ISO 8601 (UTC si possible),
+  "confidence_score": nombre entre 0 et 1 optionnel
+}
+
+RENVOIE UNIQUEMENT CE JSON.
+`;
+
+  const response = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
     },
-    body: JSON.stringify({
-      input: transcription,
-      // service-specific shape; keep minimal so tests can mock
-    }),
+    body: JSON.stringify({ prompt }),
   });
 
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Groq parse failed: ${txt}`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Groq API error: ${errorText}`);
   }
 
-  const json = await res.json();
-  // Expect the LLM to return a JSON-parsable string or structured object
-  return json;
+  const body = (await response.text()).trim();
+  if (!body) {
+    throw new Error('Groq returned an empty response');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch (error) {
+    throw new Error('Groq did not return valid JSON');
+  }
+
+  return groqExpenseSchema.parse(parsed);
 }

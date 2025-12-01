@@ -1,27 +1,53 @@
-import OpenAI from 'openai';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
+const DEFAULT_MODEL = 'whisper-1';
 
 /**
- * Transcribe an audio Blob using OpenAI Whisper.
- * Returns the transcription text.
+ * Transcribes an audio Blob with Whisper and returns plain text.
+ * The OpenAI REST API is used directly to keep the payload small and predictable.
  */
 export async function transcribeAudio(file: Blob): Promise<string> {
-  // The OpenAI Node SDK expects a file stream in many versions; here we pass the Blob as-is
-  // Server runtime (Vercel) provides web-standard Request/FormData which accepts Blob.
-  // In tests this function should be mocked.
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set');
+  if (!(file instanceof Blob)) {
+    throw new Error('A valid audio blob is required for transcription');
+  }
 
-  // Convert Blob to Buffer for Node-friendly SDK usage
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error('OPENAI_API_KEY is not set');
 
-  const resp = await openai.audio.transcriptions.create({
-    file: buffer as any,
-    model: 'whisper-1',
-    language: 'fr',
-  } as any);
+  const model = process.env.OPENAI_WHISPER_MODEL?.trim() || DEFAULT_MODEL;
 
-  // @ts-ignore - response shape depends on SDK
-  return resp.text ?? resp?.data?.text ?? '';
+  const audioBuffer = await file.arrayBuffer();
+  const blob = new Blob([audioBuffer], {
+    type: file.type || 'audio/webm',
+  });
+
+  const form = new FormData();
+  form.append('file', new File([blob], 'recording.webm', { type: blob.type }));
+  form.append('model', model);
+  form.append('language', 'fr');
+
+  const response = await fetch(WHISPER_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: 'application/json',
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Whisper transcription failed: ${errorText}`);
+  }
+
+  const payload = await response.json();
+  if (typeof payload?.text !== 'string') {
+    throw new Error('Whisper returned an unexpected payload');
+  }
+
+  const transcription = payload.text.trim();
+  if (!transcription) {
+    throw new Error('Whisper returned an empty transcription');
+  }
+
+  return transcription;
 }

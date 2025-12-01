@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+/* Variables globales */
+:root {
+  --background: 2 6 23;
+  --foreground: 248 250 252;
+}
+
+/* Base */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

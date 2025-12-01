@@ -1,60 +1,59 @@
-<!-- Copilot / AI agent instructions for VoiceTrack -->
-# VoiceTrack — Copilot Instructions
+<!-- Copilot / AI agent instructions for VoiceTracker -->
+# VoiceTracker — Copilot Instructions
 
 These instructions help AI coding agents be productive immediately in this repository.
 
-1) Big picture
-- **Stack:** Next.js (app-router, v14+), TypeScript (strict), Tailwind CSS, Supabase (Postgres), OpenAI (Whisper + GPT), Groq optional.
-- **Where to look:** `ARCHITECTURE.md`, `README.md`, `.codex/config.json` (agents/workflow), `.codex/agents/*.md` for local agent rules.
+## 1) Big picture
+- **Stack:** Next.js 15 (app-router), TypeScript (strict), Tailwind CSS, Supabase (Postgres), OpenAI Whisper, Groq for parsing
+- **Core function:** Voice expense tracking - record audio → transcribe → parse → store structured expenses
+- **Key references:** `ARCHITECTURE.md`, `README.md`, `.codex/config.json` (agent workflow), `.codex/agents/*.md` (coding rules)
 
-2) Project layout & conventions
-- **Source folders:** `app/` (pages + `app/api/*` routes), `lib/` (clients & helpers like `lib/openai/*`, `lib/supabase`), `components/`, `hooks/`, `supabase/` (migrations/seeds), `docs/`.
-- **Type rules:** TypeScript strict; always export/use explicit types. Prefer small, well-typed interfaces in `lib/types` or next to the module.
-- **Validation:** Use Zod for input validation on API routes and client forms (core agent enforces this).
-- **Error handling:** Always check and handle Supabase `error` objects — never ignore returned errors.
-- **UI:** Tailwind utility classes; components must be small and reusable (no dumping everything in a page).
+## 2) Project layout & actual structure
+- **`app/`** - Next.js pages (`page.tsx`, `record/page.tsx`) + API routes (`app/api/voice/route.ts`)
+- **`lib/`** - Core services: `whisper.ts`, `groq.ts`, `supabase.ts`, `schemas.ts`, `rateLimit.ts`
+- **`components/`** - React components (`VoiceRecorder.tsx`, `AudioModal.tsx`)
+- **`hooks/`** - Custom hooks (`useRecorder.ts`)
+- **`tests/`** - Vitest unit tests with mocked external services
 
-3) API & data flow patterns (examples)
-- **Voice pipeline:** `app/api/voice` → `lib/openai/whisper.ts` (transcribe) → `lib/openai/parser.ts` (GPT parse) → Supabase insert. Follow the pipeline in `ARCHITECTURE.md`.
-- **API rules:** API routes live under `app/api/*`. Always:
-  - validate `req` (Zod),
-  - type inputs/outputs, and
-  - return structured errors (JSON with `error` + status codes).
-- **DB:** See `ARCHITECTURE.md` for `expenses`, `categories`, `monthly_insights` schemas and indices — follow column names and constraints (e.g., `amount > 0`).
+## 3) Critical patterns & conventions
+- **TypeScript:** Strict mode enforced, explicit types required, no `any`
+- **Validation:** Zod schemas in `lib/schemas.ts` - `groqExpenseSchema`, `expenseInsertSchema`, `apiResponseSchema`
+- **Error handling:** Always handle Supabase `{ data, error }` pattern - never ignore `error` objects
+- **API structure:** All routes return `{ error: { message, details } }` on failure with proper HTTP status codes
+- **Rate limiting:** In-memory rate limiter pattern in `lib/rateLimit.ts`, applied to `/api/voice`
 
-4) Build / test / dev commands (from README)
-- Install: `npm install`.
-- Dev server: `npm run dev` (app on http://localhost:3000).
-- DB migrations: `npm run db:migrate` (project uses Supabase migrations under `supabase/`).
-- Tests: `npm run test`, `npm run test:e2e`, `npm run test:coverage`.
+## 4) Voice pipeline implementation
+- **Flow:** Audio → `lib/whisper.ts` (OpenAI transcription) → `lib/groq.ts` (expense parsing) → Supabase insert
+- **API endpoint:** `app/api/voice/route.ts` accepts `multipart/form-data` with audio file
+- **Schema validation:** All parsed expenses validated against `groqExpenseSchema` before DB insert
+- **Client pattern:** `VoiceRecorder` component + `useRecorder` hook handles recording/upload flow
 
-5) Agent-specific constraints (pulled from `.codex/agents`)
-- **No placeholders:** Generated code must be complete; avoid TODOs or stub returns.
-- **Outputs:** Prefer full file content (not partial fragments) when creating new modules.
-- **Documentation:** Update `README.md`, `docs/` and API docs when adding endpoints or changing public behavior (agent `scribe` role).
+## 5) Essential dev workflows
+- **Install:** `npm install`
+- **Dev server:** `npm run dev` (Next.js on http://localhost:3000)
+- **Testing:** `npm run test` (Vitest), `npm run test:coverage` - tests mock external APIs
+- **Test setup:** Uses jsdom environment, globals enabled, `tests/setup.ts` mocks console methods
 
-6) Security & infra notes
-- Protect secrets in `.env.local` — required vars in `README.md` (Supabase keys, `OPENAI_API_KEY`, `GROQ_API_KEY`).
-- Supabase uses Row Level Security (RLS) — follow the policies in `ARCHITECTURE.md` when writing DB access logic.
-- Rate limiting middleware is present (see example in ARCHITECTURE) — reuse pattern when adding heavy endpoints.
+## 6) Database & authentication patterns
+- **Supabase clients:** Use `getServerSupabaseClient()` for API routes (service role), `getPublicSupabaseClient()` for client-side
+- **Environment variables:** Critical - `SUPABASE_SERVICE_ROLE_KEY`, `NEXT_PUBLIC_SUPABASE_*`, `OPENAI_API_KEY`, `GROQ_API_KEY`
+- **Schema enforcement:** Categories are constrained to `['restaurant', 'courses', 'transport', 'loisirs', 'santé', 'shopping', 'autre']`
 
-7) Patterns to follow when coding
-- Keep server logic in `app/api/*` or `lib/*` (pure functions) so it can be unit-tested.
-- Write Vitest unit tests for parsing functions (`lib/openai/parser.ts`) and database helpers; the `analyst` agent expects tests for generated code.
-- For voice UX, use a `VoiceRecorder` component + `useVoiceRecorder` hook pattern and keep upload/processing decoupled.
+## 7) Testing & quality patterns
+- **External service mocking:** All tests mock OpenAI/Groq/Supabase calls - no real API calls in tests
+- **Vitest config:** Uses `@` alias for root imports, jsdom environment, test files in `tests/` only
+- **Agent rules:** `.codex/agents/core.md` enforces no placeholders, complete code, strict typing
 
-8) Helpful file references (start here)
-- `.codex/config.json` — repo AI workflow and agent roles.
-- `.codex/agents/core.md` — strict code rules (Zod, types, no placeholders).
-- `ARCHITECTURE.md` — canonical architecture, endpoints, and schema.
-- `README.md` — install/test/deploy commands.
-- `supabase/` — migrations & seeds.
+## 8) Key file patterns to follow
+- **API routes:** Follow `app/api/voice/route.ts` pattern - rate limiting, Zod validation, structured errors
+- **Schemas:** Define in `lib/schemas.ts` with preprocessing transforms (trim, number parsing)
+- **Hooks:** Follow `useRecorder.ts` pattern - typed state management, async operations, debug logging
+- **Components:** Client-side only (`"use client"`), use hooks for logic, minimal prop interfaces
 
-9) When in doubt
-- Prefer explicit types and small functions.
-- Add or update tests for any non-trivial logic you add.
-- If a change touches API shapes or DB, update `docs/03-api-documentation.md`, `README.md`, and `ARCHITECTURE.md` accordingly.
+## 9) Common gotchas & specific rules
+- **No `lib/openai/` folder** - OpenAI integration is in `lib/whisper.ts` directly
+- **Groq not OpenAI** for parsing - use `lib/groq.ts` for expense parsing, not GPT
+- **Rate limiting** - In-memory implementation in `lib/rateLimit.ts`, not external service
+- **File uploads** - Audio files validated for type/size in API route before processing
 
-— End —
-
-If any section is unclear or you want me to include direct code snippets/examples (Zod schemas, example API route, or test template), tell me which part to expand.
+When adding features, always update tests and follow the existing Zod schema patterns. Check `.codex/agents/core.md` for strict coding standards.

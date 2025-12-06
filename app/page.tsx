@@ -11,6 +11,7 @@ import {
   Play,
 } from 'lucide-react'
 import AudioModal from '@/components/AudioModal'
+import RecentExpenses from '@/components/RecentExpenses'
 
 /**
  * Homepage SaaS Premium - Redesign complet niveau produit professionnel
@@ -290,6 +291,13 @@ export default function HomePage() {
           <div className="rounded-3xl bg-white/5 backdrop-blur-sm border border-white/10 p-8 lg:p-12 hover:bg-white/10 transition-all duration-300">
             <AudioModal />
           </div>
+        </div>
+      </section>
+
+      {/* Recent expenses table for quick visual feedback */}
+      <section className="relative py-12 lg:py-16">
+        <div className="mx-auto max-w-6xl px-6 lg:px-8">
+          <RecentExpenses />
         </div>
       </section>
 

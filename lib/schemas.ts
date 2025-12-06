@@ -42,10 +42,16 @@ export const groqExpenseSchema = z.object({
     if (typeof val === 'string') return val.trim();
     return val;
   }, isoDateString),
-  confidence_score: z.preprocess(numberFromString, z.number().min(0).max(1).optional()),
+  confidence_score: z.preprocess(
+    (val) => (val === null || val === undefined ? undefined : numberFromString(val)),
+    z.number().min(0).max(1).optional(),
+  ),
 });
 
 export const expenseInsertSchema = groqExpenseSchema.extend({
+  user_id: z
+    .string({ required_error: 'user_id is required' })
+    .uuid({ message: 'user_id must be a valid uuid' }),
   raw_transcription: z
     .string({ required_error: 'raw_transcription is required' })
     .min(1, 'raw_transcription cannot be empty'),
@@ -61,8 +67,9 @@ export const expenseRecordSchema = expenseInsertSchema
   .passthrough();
 
 export const apiResponseSchema = z.object({
-  expense: expenseRecordSchema,
-  transcription: z.string(),
+  mode: z.enum(['audio', 'text']),
+  transcript: z.string({ required_error: 'transcript is required' }),
+  extracted: expenseRecordSchema,
 });
 
 export type GroqExpense = z.infer<typeof groqExpenseSchema>;

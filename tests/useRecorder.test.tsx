@@ -71,7 +71,11 @@ describe('useRecorder hook', () => {
   it('records audio and uploads successfully', async () => {
     const mockResponse = {
       ok: true,
-      json: async () => ({ transcription: 'Transcription ok' }),
+      json: async () => ({
+        mode: 'audio',
+        transcript: 'Transcription ok',
+        extracted: { id: '1', amount: 10, category: 'courses', raw_transcription: 'Transcription ok' },
+      }),
     } as Response;
     const fetchSpy = vi.fn().mockResolvedValue(mockResponse) as unknown as typeof fetch;
     global.fetch = fetchSpy;
@@ -91,15 +95,19 @@ describe('useRecorder hook', () => {
 
     await act(async () => {
       const uploadResult = await result.current.uploadAudio();
-      expect(uploadResult?.transcription).toBe('Transcription ok');
+      expect(uploadResult?.transcript).toBe('Transcription ok');
+      expect(uploadResult?.mode).toBe('audio');
     });
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const fetchMock = fetchSpy as unknown as ReturnType<typeof vi.fn>;
     const fetchCall = fetchMock.mock.calls[0];
-    expect(fetchCall?.[0]).toBe('/api/transcribe');
+    expect(fetchCall?.[0]).toBe('/api/voice');
     expect(fetchCall?.[1]?.method).toBe('POST');
-    expect(fetchCall?.[1]?.body).toBeInstanceOf(Blob);
+    expect(fetchCall?.[1]?.body).toBeInstanceOf(FormData);
+    const fetchBody = fetchCall?.[1]?.body as FormData | undefined;
+    if (!fetchBody) throw new Error('Expected FormData body');
+    expect(Array.from(fetchBody.keys())).toContain('audio');
     expect(result.current.status).toBe('success');
     expect(result.current.transcription).toBe('Transcription ok');
   });
@@ -172,6 +180,7 @@ describe('useRecorder hook', () => {
     await act(async () => {
       const uploadResult = await result.current.uploadAudio();
       expect(uploadResult?.error).toBe('failed');
+      expect(uploadResult?.mode).toBe('audio');
     });
 
     expect(result.current.status).toBe('error');
@@ -194,9 +203,68 @@ describe('useRecorder hook', () => {
     await act(async () => {
       const uploadResult = await result.current.uploadAudio();
       expect(uploadResult?.error).toBe('network down');
+      expect(uploadResult?.mode).toBe('audio');
     });
 
     expect(result.current.status).toBe('error');
     expect(result.current.error).toBe('network down');
+  });
+
+  // WHY: manual text fallback should call the API with JSON payload and update the same state as audio submissions.
+  it('submits manual text successfully', async () => {
+    const manualResponse = {
+      ok: true,
+      json: async () => ({
+        mode: 'text',
+        transcript: '12 euros courses hier',
+        extracted: {
+          id: '1',
+          amount: 12,
+          category: 'courses',
+          expense_date: '2025-01-01T00:00:00.000Z',
+          confidence_score: 0.9,
+          raw_transcription: '12 euros courses hier',
+        },
+      }),
+    } as Response;
+
+    const fetchSpy = vi.fn().mockResolvedValue(manualResponse) as unknown as typeof fetch;
+    global.fetch = fetchSpy;
+
+    const { result } = renderHook(() => useRecorder());
+
+    await act(async () => {
+      const submission = await result.current.submitManualText(' 12 euros courses hier ');
+      expect(submission?.transcript).toBe('12 euros courses hier');
+      expect(submission?.mode).toBe('text');
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/voice?type=text',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: '12 euros courses hier' }),
+      }),
+    );
+    expect(result.current.status).toBe('success');
+    expect(result.current.transcription).toBe('12 euros courses hier');
+  });
+
+  // WHY: empty manual submissions should be rejected client-side without calling the network.
+  it('rejects empty manual text submissions', async () => {
+    const fetchSpy = vi.fn();
+    global.fetch = fetchSpy as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useRecorder());
+
+    await act(async () => {
+      const submission = await result.current.submitManualText('   ');
+      expect(submission).toBeNull();
+    });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.current.status).toBe('error');
+    expect(result.current.error).toBe('Le texte ne peut pas être vide');
   });
 });

@@ -8,6 +8,7 @@ import type {
   TransactionInput,
   TransactionUpdateInput,
 } from '@/models/transaction';
+import { BudgetLedgerService } from '@/lib/budget';
 import { parseTransactionInput, parseTransactionUpdate } from '@/lib/validation';
 import { applyUserFilter, handleServiceError, resolveUserId } from '@/lib/utils';
 import { getServerSupabaseClient } from '@/lib/supabase';
@@ -18,12 +19,12 @@ const TABLE_NAME = 'transactions';
 // -------------------------------------------
 const SELECT_FIELDS =
   // Joins Supabase : on cible explicitement la FK category_id pour éviter les erreurs de relation
-  'id, amount, account, settlement_date, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, deleted_at, type, metadata, category:categories!category_id(id, name, icon, color)';
+  'id, amount, account, settlement_date, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, deleted_at, type, metadata, budget_id, category:categories!category_id(id, name, icon, color)';
 // -------------------------------------------
 // Sélection sans join, utilisée en fallback si la relation n'est pas disponible
 // -------------------------------------------
 const BASIC_FIELDS =
-  'id, amount, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, deleted_at, type, metadata';
+  'id, amount, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, deleted_at, type, metadata, budget_id';
 const DEFAULT_CATEGORY: TransactionCategory = 'autre';
 const DEFAULT_TYPE: Transaction['type'] = 'expense';
 
@@ -32,6 +33,7 @@ const DEFAULT_TYPE: Transaction['type'] = 'expense';
  */
 export class TransactionService {
   private client = getServerSupabaseClient();
+  private budgetLedger = new BudgetLedgerService(this.client);
 
   /**
    * Convert a raw Supabase row into the domain transaction model.
@@ -59,6 +61,7 @@ export class TransactionService {
             color: (categoryInfo.color as string | null | undefined) ?? null,
           }
         : null,
+      budgetId: (row.budget_id as string | null | undefined) ?? null,
       description: (row.description as string | null | undefined) ?? null,
       merchant: (row.merchant as string | null | undefined) ?? null,
       date,
@@ -139,12 +142,20 @@ export class TransactionService {
     const parsed = parseTransactionInput(payload);
     const userId = resolveUserId(parsed.userId, { required: true });
 
+    const type = parsed.type ?? DEFAULT_TYPE;
+    let budgetId: string | null = null;
+    if (type === 'expense') {
+      const budgets = await this.budgetLedger.listForUser(userId);
+      const matchedBudget = this.budgetLedger.matchBudgetForCategory(parsed.category, budgets);
+      budgetId = matchedBudget?.id ?? null;
+    }
+
     const { data, error }: PostgrestSingleResponse<Record<string, unknown>[]> = await this.client
       .from(TABLE_NAME)
       .insert({
         user_id: userId,
         amount: parsed.amount,
-        type: parsed.type ?? DEFAULT_TYPE,
+        type,
         account: parsed.account,
         settlement_date: parsed.settlementDate ?? null,
         category_id: null,
@@ -152,6 +163,7 @@ export class TransactionService {
         merchant: null,
         date: parsed.expenseDate,
         ai_raw: parsed.rawTranscription,
+        budget_id: budgetId,
         // Persist human-readable category in metadata because DB column is a UUID.
         metadata: { category: parsed.category },
       })
@@ -194,6 +206,29 @@ export class TransactionService {
       updatePayload.metadata = { category: parsed.category };
     }
 
+    let existingType: Transaction['type'] | undefined;
+    if (!parsed.type && parsed.category) {
+      const { data: existingRow, error: existingError } = await this.client
+        .from(TABLE_NAME)
+        .select('type')
+        .eq('id', id)
+        .eq('user_id', scopedUserId)
+        .maybeSingle();
+      if (existingError) {
+        handleServiceError('[transactions] Failed to fetch transaction for budget reassignment', existingError);
+      }
+      existingType = (existingRow?.type as Transaction['type'] | undefined) ?? undefined;
+    }
+
+    const targetType = parsed.type ?? existingType ?? DEFAULT_TYPE;
+    if (targetType !== 'expense') {
+      updatePayload.budget_id = null;
+    } else if (parsed.category) {
+      const budgets = await this.budgetLedger.listForUser(scopedUserId);
+      const matchedBudget = this.budgetLedger.matchBudgetForCategory(parsed.category, budgets);
+      updatePayload.budget_id = matchedBudget?.id ?? null;
+    }
+
     const { data, error }: PostgrestSingleResponse<Record<string, unknown>> = await this.client
       .from(TABLE_NAME)
       .update(updatePayload)
@@ -224,6 +259,25 @@ export class TransactionService {
 
     if (error) {
       handleServiceError('[transactions] Failed to soft delete transaction', error);
+    }
+  }
+
+  /**
+   * Soft delete multiple transactions at once.
+   * @param ids - list of transaction identifiers
+   * @param userId - optional user scope
+   */
+  async softDeleteMany(ids: string[], userId?: string): Promise<void> {
+    if (!ids.length) return;
+    const scopedUserId = resolveUserId(userId, { required: true });
+    const { error } = await this.client
+      .from(TABLE_NAME)
+      .update({ deleted_at: new Date().toISOString() })
+      .in('id', ids)
+      .eq('user_id', scopedUserId);
+
+    if (error) {
+      handleServiceError('[transactions] Failed to soft delete transactions', error);
     }
   }
 

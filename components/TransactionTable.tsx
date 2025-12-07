@@ -31,6 +31,8 @@ export default function TransactionTable({ transactions }: TransactionTableProps
   // State local pour refléter les mutations (suppression) sans recharger la page
   // -------------------------------------------
   const [items, setItems] = useState(transactions);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [collapsedMonths, setCollapsedMonths] = useState<Set<string>>(new Set());
   // -------------------------------------------
   // State pour l'édition : ligne en cours + valeurs du formulaire
   // -------------------------------------------
@@ -62,6 +64,66 @@ export default function TransactionTable({ transactions }: TransactionTableProps
   // État dérivé pour afficher un message vide si nécessaire
   // -------------------------------------------
   const isEmpty = useMemo(() => items.length === 0, [items]);
+  const allSelected = useMemo(() => items.length > 0 && selectedIds.size === items.length, [items, selectedIds]);
+  const someSelected = useMemo(() => selectedIds.size > 0, [selectedIds]);
+  const groupedByMonth = useMemo(() => {
+    const map = new Map<string, Transaction[]>();
+    items.forEach((tx) => {
+      const monthKey = tx.date.slice(0, 7);
+      if (!map.has(monthKey)) map.set(monthKey, []);
+      map.get(monthKey)!.push(tx);
+    });
+    const formatMonth = (key: string) => {
+      const safe = `${key}-01`;
+      const parsed = new Date(safe);
+      return Number.isNaN(parsed.getTime())
+        ? key
+        : parsed.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    };
+    return Array.from(map.entries())
+      .sort((a, b) => (a[0] > b[0] ? -1 : 1))
+      .map(([key, rows]) => {
+        const sorted = rows.sort((a, b) => (a.date > b.date ? -1 : 1));
+        const summary = sorted.reduce(
+          (acc, tx) => {
+            const amount = Number(tx.amount) || 0;
+            const type = tx.type ?? 'expense';
+            const metadata = (tx as any).metadata as Record<string, unknown> | undefined;
+            const isRecurring = Boolean(metadata && (metadata.recurringRuleId || metadata.carryoverFrom));
+            const isBudgeted = Boolean((tx as any).budgetId);
+
+            if (type === 'income') {
+              acc.income += amount;
+            } else if (type === 'expense') {
+              // Ignore dépenses déjà imputées à un budget, sauf charges fixes (recurring/carryover).
+              if (isBudgeted && !isRecurring) {
+                return acc;
+              }
+              acc.expense += amount;
+            }
+            acc.net = acc.income - acc.expense;
+            acc.count += 1;
+            return acc;
+          },
+          { income: 0, expense: 0, net: 0, count: 0 },
+        );
+        return {
+          key,
+          label: formatMonth(key),
+          rows: sorted,
+          summary,
+        };
+      });
+  }, [items]);
+
+  const toggleMonth = (key: string) => {
+    setCollapsedMonths((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   // -------------------------------------------
   // Charge les catégories au montage pour proposer la liste dans l'éditeur
@@ -131,6 +193,40 @@ export default function TransactionTable({ transactions }: TransactionTableProps
     toast({
       title: 'Supprimée',
       description: 'La transaction a été supprimée',
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selectedIds.size) return;
+    const ids = Array.from(selectedIds);
+    const { error } = await supabase.from('transactions').delete().in('id', ids);
+    if (error) {
+      toast({
+        title: 'Erreur',
+        description: 'Suppression multiple impossible',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setItems((prev) => prev.filter((row) => !selectedIds.has(row.id)));
+    setSelectedIds(new Set());
+    toast({ title: 'Supprimées', description: 'Transactions supprimées' });
+  };
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+      return;
+    }
+    setSelectedIds(new Set(items.map((i) => i.id)));
+  };
+
+  const toggleOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
   };
 
@@ -208,12 +304,43 @@ export default function TransactionTable({ transactions }: TransactionTableProps
       {/* ------------------------------------------- */}
       {/* Sous-titre compact juste au-dessus du tableau (non sticky pour ne pas masquer l'en-tête) */}
       {/* ------------------------------------------- */}
-      <div className="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">Liste des transactions</div>
+      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 text-sm text-slate-400">
+        <span>Liste des transactions</span>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-indigo-500"
+              checked={allSelected}
+              onChange={toggleAll}
+              disabled={isEmpty}
+            />
+            Tout sélectionner
+          </label>
+          <button
+            type="button"
+            className="rounded bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-40"
+            onClick={handleBulkDelete}
+            disabled={!someSelected}
+          >
+            Supprimer la sélection
+          </button>
+        </div>
+      </div>
 
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-slate-800 text-sm">
           <thead className="bg-slate-900/80 text-left text-slate-400">
             <tr>
+              <th className="px-4 py-3 w-10">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-indigo-500"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  disabled={isEmpty}
+                />
+              </th>
               <th className="px-4 py-3">Date</th>
               <th className="px-4 py-3">Type</th>
               <th className="px-4 py-3">Catégorie</th>
@@ -222,80 +349,141 @@ export default function TransactionTable({ transactions }: TransactionTableProps
               <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800">
-            {items.map((tx) => {
-              // -------------------------------------------
-              // Badge type coloré : renforce la hiérarchie visuelle
-              // -------------------------------------------
-              const badgeClass = typeStyles[tx.type ?? 'expense'] ?? typeStyles.expense;
-
-              // -------------------------------------------
-              // Badge catégorie : couleur translucide + icône pour repère rapide
-              // -------------------------------------------
-              const categoryBadge = tx.categoryInfo ? (
-                <span
-                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
-                  style={{
-                    backgroundColor: `${tx.categoryInfo.color ?? '#64748b'}22`,
-                    color: tx.categoryInfo.color ?? '#cbd5e1',
-                  }}
-                >
-                  {tx.categoryInfo.icon ?? '•'} {tx.categoryInfo.name}
-                </span>
-              ) : (
-                <span className="text-xs text-slate-500">Non catégorisé</span>
-              );
-
-              return (
-                <tr key={tx.id} className="hover:bg-slate-800/50 transition-colors">
-                  <td className="px-4 py-3 text-slate-200">{tx.date.slice(0, 10)}</td>
-                  <td className="px-4 py-3">
-                    <span className={`rounded-full px-2 py-1 text-xs font-semibold capitalize ${badgeClass}`}>
-                      {tx.type ?? 'expense'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">{categoryBadge}</td>
-                  <td className="px-4 py-3 text-slate-300">{tx.description || '—'}</td>
-                  <td className="px-4 py-3 text-right text-white font-bold">{tx.amount.toFixed(2)}€</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      {/* ------------------------------------------- */}
-                      {/* Bouton Éditer : ouvre le formulaire inline */}
-                      {/* ------------------------------------------- */}
-                      <button
-                        type="button"
-                        className="rounded bg-slate-800 px-3 py-1 text-xs text-slate-100 hover:bg-slate-700"
-                        onClick={() => handleEdit(tx)}
+          {groupedByMonth.map((group) => (
+            <tbody key={group.key} className="divide-y divide-slate-800">
+              <tr className="bg-slate-900/70 text-xs uppercase tracking-wide text-slate-400">
+                <td colSpan={7} className="px-4 py-2">
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      className="flex items-center gap-2 text-left text-slate-200 hover:text-white"
+                      onClick={() => toggleMonth(group.key)}
+                    >
+                      <span
+                        className="flex h-5 w-5 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-[10px]"
+                        aria-label={collapsedMonths.has(group.key) ? 'Déplier' : 'Réduire'}
                       >
-                        Éditer
-                      </button>
-                      {/* ------------------------------------------- */}
-                      {/* Bouton Supprimer : déclenche handleDelete avec feedback toast */}
-                      {/* ------------------------------------------- */}
-                      <button
-                        type="button"
-                        className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-500"
-                        onClick={() => handleDelete(tx.id)}
+                        {collapsedMonths.has(group.key) ? '+' : '−'}
+                      </span>
+                      {group.label}
+                      <span className="rounded-full border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] lowercase text-slate-200">
+                        {group.summary.count} op.
+                      </span>
+                    </button>
+                    <div className="flex items-center gap-3 text-[11px] text-slate-200">
+                      <span className="rounded-full bg-emerald-500/15 px-2 py-1 text-emerald-200">
+                        +{group.summary.income.toFixed(2)}€
+                      </span>
+                      <span className="rounded-full bg-rose-500/15 px-2 py-1 text-rose-200">
+                        −{group.summary.expense.toFixed(2)}€
+                      </span>
+                      <span
+                        className={`rounded-full px-2 py-1 ${
+                          group.summary.net >= 0 ? 'bg-emerald-500/15 text-emerald-100' : 'bg-rose-500/15 text-rose-100'
+                        }`}
                       >
-                        Supprimer
-                      </button>
+                        Net {group.summary.net.toFixed(2)}€
+                      </span>
                     </div>
-                  </td>
-                </tr>
-              );
-            })}
+                  </div>
+                </td>
+              </tr>
+              {!collapsedMonths.has(group.key)
+                ? group.rows.map((tx) => {
+                  // -------------------------------------------
+                  // Badge type coloré : renforce la hiérarchie visuelle
+                  // -------------------------------------------
+                  const badgeClass = typeStyles[tx.type ?? 'expense'] ?? typeStyles.expense;
+
+                  // -------------------------------------------
+                  // Badge catégorie : couleur translucide + icône pour repère rapide
+                  // -------------------------------------------
+                  const categoryBadge = tx.categoryInfo ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
+                      style={{
+                        backgroundColor: `${tx.categoryInfo.color ?? '#64748b'}22`,
+                        color: tx.categoryInfo.color ?? '#cbd5e1',
+                      }}
+                    >
+                      {tx.categoryInfo.icon ?? '•'} {tx.categoryInfo.name}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-500">Non catégorisé</span>
+                  );
+
+                  const formattedDateTime = (() => {
+                    const parsed = new Date(tx.date);
+                    if (Number.isNaN(parsed.getTime())) return tx.date.slice(0, 10);
+                    return parsed.toLocaleString('fr-FR', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
+                  })();
+
+                  return (
+                    <tr key={tx.id} className="hover:bg-slate-800/50 transition-colors">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 accent-indigo-500"
+                          checked={selectedIds.has(tx.id)}
+                          onChange={() => toggleOne(tx.id)}
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-slate-200">{formattedDateTime}</td>
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full px-2 py-1 text-xs font-semibold capitalize ${badgeClass}`}>
+                          {tx.type ?? 'expense'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">{categoryBadge}</td>
+                      <td className="px-4 py-3 text-slate-300">{tx.description || '—'}</td>
+                      <td className="px-4 py-3 text-right text-white font-bold">{tx.amount.toFixed(2)}€</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-2">
+                          {/* ------------------------------------------- */}
+                          {/* Bouton Éditer : ouvre le formulaire inline */}
+                          {/* ------------------------------------------- */}
+                          <button
+                            type="button"
+                            className="rounded bg-slate-800 px-3 py-1 text-xs text-slate-100 hover:bg-slate-700"
+                            onClick={() => handleEdit(tx)}
+                          >
+                            Éditer
+                          </button>
+                          {/* ------------------------------------------- */}
+                          {/* Bouton Supprimer : déclenche handleDelete avec feedback toast */}
+                          {/* ------------------------------------------- */}
+                          <button
+                            type="button"
+                            className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-500"
+                            onClick={() => handleDelete(tx.id)}
+                          >
+                            Supprimer
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+                : null}
 
             {/* ------------------------------------------- */}
             {/* État vide : message centré si aucune transaction */}
             {/* ------------------------------------------- */}
-            {isEmpty ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                  Aucune transaction pour le moment.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
+              {isEmpty ? (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                    Aucune transaction pour le moment.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          ))}
         </table>
       </div>
 

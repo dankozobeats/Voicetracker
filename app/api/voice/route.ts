@@ -6,6 +6,8 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 
 import { extractTransaction, transcribeAudio } from '@/lib/groq';
 import { transactionInsertSchema, transactionParsedLLMSchema } from '@/lib/schemas';
+import { BudgetLedgerService } from '@/lib/budget';
+import type { TransactionCategory } from '@/models/transaction';
 import { getClientIp, rateLimit } from '@/lib/rateLimit';
 
 const ALLOWED_AUDIO_TYPES = new Set(['audio/webm', 'audio/wav', 'audio/ogg', 'audio/mpeg', 'audio/mp4']);
@@ -44,6 +46,22 @@ const inferType = (type: ParsedTransaction['type'] | undefined, rawText: string,
   return incomeKeywords.some((word) => haystack.includes(word)) ? 'income' : 'expense';
 };
 
+const budgetLedger = new BudgetLedgerService();
+
+/**
+ * Heuristic pour déterminer une catégorie textuelle (alignée avec les budgets) à partir du texte ou du merchant.
+ */
+const inferCategory = (rawText: string, description?: string | null): TransactionCategory => {
+  const haystack = `${rawText} ${description ?? ''}`.toLowerCase();
+  if (haystack.match(/mc ?do|quick|burger king|kfc|restaurant|resto|food|pizza/)) return 'restaurant';
+  if (haystack.match(/carrefour|leclerc|intermarch|courses|supermarch|épicerie|biocoop|aldi|lidl|monoprix/)) return 'courses';
+  if (haystack.match(/uber|bolt|sncf|ratp|tcl|transport|taxi|bus|train|tram|essence|station/)) return 'transport';
+  if (haystack.match(/cinéma|cine|netflix|spotify|loisir|concert|jeu|jeux|culture/)) return 'loisirs';
+  if (haystack.match(/pharmacie|médecin|dentiste|santé|medical|opticien/)) return 'santé';
+  if (haystack.match(/amazon|shopping|magasin|vetement|vêtement|mode/)) return 'shopping';
+  return 'autre';
+};
+
 /**
  * Normalize parsed data (LLM or manual) and insert into Supabase.
  */
@@ -60,8 +78,9 @@ async function insertTransaction(
   const today = new Date();
   const parsedDate = tx.date ? new Date(tx.date) : today;
   const isValidDate = !Number.isNaN(parsedDate.getTime());
+  const isPastYear = parsedDate.getFullYear() < today.getFullYear(); // protège contre une année précédente (ex: 2024 quand on est en 2025)
   const isTooOld = parsedDate.getFullYear() < today.getFullYear() - 1; // garde max 1 an de recul par défaut
-  const normalizedDate = isValidDate && !isTooOld ? parsedDate.toISOString() : today.toISOString();
+  const normalizedDate = isValidDate && !isPastYear && !isTooOld ? parsedDate.toISOString() : today.toISOString();
 
   const parsed = transactionInsertSchema.parse({
     ...tx,
@@ -85,6 +104,65 @@ async function insertTransaction(
     metadata: {},
   };
 
+  // -------------------------------------------
+  // Tente d'associer un budget (catégorie textuelle) pour déduire l'enveloppe.
+  // -------------------------------------------
+  let budgetAlert: {
+    budgetId: string;
+    budgetName: string;
+    progress: number;
+    amount: number;
+    spent: number;
+    level: 50 | 75 | 100;
+  } | null = null;
+
+  try {
+    const category = inferCategory(raw, parsed.description ?? parsed.merchant ?? null);
+    transactionPayload.metadata = { category };
+
+    if (transactionPayload.type === 'expense') {
+      const budgets = await budgetLedger.listForUser(userId);
+      const matched = category ? budgetLedger.matchBudgetForCategory(category, budgets) : null;
+      if (matched) {
+        transactionPayload.budget_id = matched.id;
+      }
+
+      const { data: txRows, error: txError } = await supabase
+        .from('transactions')
+        .select('amount, type, deleted_at')
+        .eq('budget_id', matched?.id ?? null)
+        .eq('user_id', userId);
+
+      if (!txError && matched) {
+        const spent = (txRows ?? []).reduce((sum, row) => {
+          const t = (row.type as ParsedTransaction['type'] | undefined) ?? 'expense';
+          if (t === 'income' || t === 'transfer' || row.deleted_at) return sum;
+          const amt = Number(row.amount);
+          return Number.isFinite(amt) ? sum + amt : sum;
+        }, parsed.amount);
+
+        const progress = matched.amount > 0 ? spent / matched.amount : 0;
+        const thresholds: (50 | 75 | 100)[] = [50, 75, 100];
+        const hit = thresholds.reduce<50 | 75 | 100 | null>((acc, thr) => {
+          if (progress >= thr / 100) return thr;
+          return acc;
+        }, null);
+        if (hit !== null) {
+          budgetAlert = {
+            budgetId: matched.id,
+            budgetName: matched.name,
+            progress,
+            amount: matched.amount,
+            spent,
+            level: hit,
+          };
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('[voice] budget linkage failed, fallback to neutral insert', error);
+  }
+
   const { data, error } = await supabase.from('transactions').insert([transactionPayload]).select().single();
 
   if (error) {
@@ -92,7 +170,7 @@ async function insertTransaction(
     return errorResponse('DB_INSERT_FAILED', 'Database insertion failed', 500, error, headers);
   }
 
-  return successResponse(data, 201, headers);
+  return successResponse({ ...data, budgetAlert }, 201, headers);
 }
 
 export async function POST(request: Request): Promise<Response> {

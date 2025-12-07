@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { RECURRING_LOOKAHEAD_MONTHS, type RecurringInstance, type RecurringRule } from '@/models/recurring';
+import {
+  RECURRING_LOOKAHEAD_MONTHS,
+  type RecurringInstance,
+  type RecurringMonthSummary,
+  type RecurringRule,
+} from '@/models/recurring';
 import type { TransactionCategory } from '@/models/transaction';
 import { categories } from '@/lib/schemas';
 
@@ -22,6 +27,7 @@ type FormState = {
 type RecurringManagerProps = {
   initialRules: RecurringRule[];
   initialUpcoming: RecurringInstance[];
+  initialMonthSummaries: RecurringMonthSummary[];
   initialTotal: number;
 };
 
@@ -52,9 +58,15 @@ const MONTH_BADGES = [
   'bg-rose-500/15 text-rose-100',
 ];
 
-export default function RecurringManager({ initialRules, initialUpcoming, initialTotal }: RecurringManagerProps) {
+export default function RecurringManager({
+  initialRules,
+  initialUpcoming,
+  initialMonthSummaries,
+  initialTotal,
+}: RecurringManagerProps) {
   const [rules, setRules] = useState<RecurringRule[]>(initialRules);
   const [upcoming, setUpcoming] = useState<RecurringInstance[]>(initialUpcoming);
+  const [monthSummaries, setMonthSummaries] = useState<RecurringMonthSummary[]>(initialMonthSummaries);
   const [total, setTotal] = useState<number>(initialTotal);
   const [form, setForm] = useState<FormState>(defaultForm);
   const [loading, setLoading] = useState(false);
@@ -67,6 +79,18 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
 
   const isEditing = useMemo(() => !!form.id, [form.id]);
 
+  const handleAddSalaryPreset = () => {
+    setForm({
+      ...defaultForm,
+      amount: '',
+      description: 'Salaire',
+      direction: 'income',
+      cadence: 'monthly',
+      dayOfMonth: '1',
+    });
+    setShowForm(true);
+  };
+
   const refresh = async () => {
     const res = await fetch('/api/recurring');
     const payload = await res.json();
@@ -76,9 +100,11 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
     }
     const refreshedRules = payload.rules ?? [];
     const refreshedUpcoming = payload.upcoming ?? [];
+    const refreshedMonthSummaries = payload.monthSummaries ?? [];
     setRules(refreshedRules);
     setUpcoming(refreshedUpcoming);
-    setTotal(computeNextCycleTotal(refreshedUpcoming));
+    setMonthSummaries(refreshedMonthSummaries);
+    setTotal(computeNextCycleTotal(refreshedUpcoming, refreshedMonthSummaries));
   };
 
   useEffect(() => {
@@ -107,6 +133,10 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
       }))
       .sort((a, b) => (a.year > b.year ? 1 : -1));
   }, [upcoming]);
+
+  const summaryByMonth = useMemo(() => {
+    return new Map(monthSummaries.map((summary) => [summary.month, summary]));
+  }, [monthSummaries]);
 
   useEffect(() => {
     const currentYear = new Date().getFullYear().toString();
@@ -189,18 +219,21 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
     }
   };
 
-  const computeNextCycleTotal = (instances: RecurringInstance[]) => {
+  const computeNextCycleTotal = (instances: RecurringInstance[], summaries?: RecurringMonthSummary[]) => {
+    if (summaries?.length) {
+      return summaries[0]?.totalWithCarryover ?? 0;
+    }
     if (!instances.length) return 0;
     const sorted = [...instances].sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
     const firstMonth = sorted[0].dueDate.slice(0, 7); // YYYY-MM
     return sorted
-      .filter((instance) => instance.dueDate.slice(0, 7) === firstMonth)
+      .filter((instance) => instance.direction !== 'income' && instance.dueDate.slice(0, 7) === firstMonth)
       .reduce((sum, instance) => sum + instance.amount, 0);
   };
 
   useEffect(() => {
-    setTotal(computeNextCycleTotal(upcoming));
-  }, [upcoming]);
+    setTotal(computeNextCycleTotal(upcoming, monthSummaries));
+  }, [upcoming, monthSummaries]);
 
   return (
     <div className="space-y-4">
@@ -262,6 +295,16 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
                 Annuler
               </button>
             ) : null}
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className="text-slate-400">Aide rapide :</span>
+            <button
+              type="button"
+              onClick={handleAddSalaryPreset}
+              className="rounded-full border border-emerald-500/50 bg-emerald-500/10 px-3 py-1 text-emerald-100 transition hover:bg-emerald-500/20"
+            >
+              Préremplir Salaire (revenu mensuel)
+            </button>
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <label className="flex flex-col gap-1 text-sm text-slate-300">
@@ -479,7 +522,11 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
           ) : (
             groupedByYear.map(({ year, months }) => {
               const yearTotal = months
-                .reduce((sum, entry) => sum + entry.instances.reduce((s, i) => s + i.amount, 0), 0)
+                .reduce((sum, entry) => {
+                  const summary = summaryByMonth.get(entry.month);
+                  if (summary) return sum + summary.totalWithCarryover;
+                  return sum + entry.instances.reduce((s, i) => (i.direction === 'income' ? s : s + i.amount), 0);
+                }, 0)
                 .toFixed(2);
               const isYearExpanded = expandedYears[year] ?? false;
               return (
@@ -497,7 +544,13 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
                   {isYearExpanded ? (
                     <div className="divide-y divide-slate-800">
                       {months.map(({ month, instances }, idx) => {
-                        const monthTotal = instances.reduce((sum, i) => sum + i.amount, 0).toFixed(2);
+                        const summary = summaryByMonth.get(month);
+                        const expensesTotal = summary
+                          ? summary.expenses
+                          : instances.reduce((sum, i) => (i.direction === 'income' ? sum : sum + i.amount), 0);
+                        const carryoverValue = summary?.carryover ?? 0;
+                        const overdraftRemaining = summary?.overdraftRemaining ?? null;
+                        const monthTotal = (summary?.totalWithCarryover ?? expensesTotal).toFixed(2);
                         const isExpanded = expandedMonths[month] ?? false;
                         const gradient = MONTH_GRADIENTS[idx % MONTH_GRADIENTS.length];
                         const badgeClass = MONTH_BADGES[idx % MONTH_BADGES.length];
@@ -515,21 +568,56 @@ export default function RecurringManager({ initialRules, initialUpcoming, initia
                                 {monthTotal}€ <span>{isExpanded ? '▲' : '▼'}</span>
                               </span>
                             </button>
+                            <div className="flex flex-wrap items-center gap-3 border-b border-slate-800/60 bg-slate-900/70 px-4 py-2 text-[13px] text-slate-200">
+                              <span className="text-slate-300">Charges fixes: {expensesTotal.toFixed(2)}€</span>
+                              <span className="text-emerald-200">Revenus fixes: {(summary?.income ?? 0).toFixed(2)}€</span>
+                              <span className={`font-semibold ${carryoverValue > 0 ? 'text-red-300' : 'text-slate-400'}`}>
+                                Rattrapage: {carryoverValue.toFixed(2)}€
+                              </span>
+                              <span className="font-semibold text-white">Total mois: {monthTotal}€</span>
+                              {overdraftRemaining !== null ? (
+                                <span className="text-slate-400">
+                                  Découvert restant: {overdraftRemaining.toFixed(2)}€
+                                </span>
+                              ) : null}
+                            </div>
                             {isExpanded ? (
                               <div className="divide-y divide-slate-800 bg-slate-900/60 text-slate-200">
                                 {instances.map((instance) => (
                                   <div
                                     key={`${instance.ruleId}-${instance.dueDate}`}
-                                    className="flex items-center justify-between px-4 py-2"
+                                    className={`flex items-center justify-between px-4 py-2 ${
+                                      instance.kind === 'carryover' ? 'bg-red-900/10' : ''
+                                    }`}
                                   >
                                     <div className="space-y-1">
-                                      <p className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${badgeClass}`}>
-                                        <span className="inline-block h-2 w-2 rounded-full bg-white/70" />
+                                      <p
+                                        className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
+                                          instance.kind === 'carryover'
+                                            ? 'bg-red-900/40 text-red-100 ring-1 ring-red-500/40'
+                                            : instance.direction === 'income'
+                                              ? 'bg-emerald-900/40 text-emerald-100 ring-1 ring-emerald-500/30'
+                                              : badgeClass
+                                        }`}
+                                      >
+                                        <span
+                                          className={`inline-block h-2 w-2 rounded-full ${
+                                            instance.kind === 'carryover' ? 'bg-red-300' : 'bg-white/70'
+                                          }`}
+                                        />
                                         {instance.description || instance.category}
                                       </p>
                                       <p className="text-xs text-slate-500">{instance.dueDate.slice(0, 10)}</p>
                                     </div>
-                                    <span className="rounded-full bg-slate-800/60 px-3 py-1 text-xs font-semibold text-indigo-100">
+                                    <span
+                                      className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                        instance.kind === 'carryover'
+                                          ? 'bg-red-900/60 text-red-100 ring-1 ring-red-500/40'
+                                          : instance.direction === 'income'
+                                            ? 'bg-emerald-900/60 text-emerald-100 ring-1 ring-emerald-500/30'
+                                            : 'bg-slate-800/60 text-indigo-100'
+                                      }`}
+                                    >
                                       {instance.amount.toFixed(2)}€
                                     </span>
                                   </div>

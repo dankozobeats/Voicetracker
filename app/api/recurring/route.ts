@@ -15,9 +15,10 @@ export async function GET(): Promise<NextResponse> {
     } = await supabase.auth.getSession();
     const userId = session?.user?.id;
     const rules = await recurringService.listRules(userId);
-    const upcoming = recurringService.generateUpcomingInstances(rules);
-    const total = recurringService.computeTotalFixedCharges(upcoming);
-    return json({ rules, upcoming, total });
+    const forecast = await recurringService.generateUpcomingWithCarryover(rules, userId);
+    const upcoming = forecast.instances;
+    const total = forecast.monthSummaries[0]?.totalWithCarryover ?? recurringService.computeMonthlyFixedCharges(upcoming);
+    return json({ rules, upcoming, total, monthSummaries: forecast.monthSummaries });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to fetch recurring rules';
     return json({ error: message }, 400);

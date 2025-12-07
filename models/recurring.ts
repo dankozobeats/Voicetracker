@@ -28,9 +28,23 @@ export interface RecurringInstance {
   amount: number;
   category: TransactionCategory;
   description?: string | null;
+  direction: 'income' | 'expense';
+  kind?: 'recurring' | 'carryover';
 }
 
 /**
  * Number of months to generate forward-looking recurring instances.
  */
 export const RECURRING_LOOKAHEAD_MONTHS = 24;
+
+/**
+ * Monthly projection summary including carry-over of overdraft.
+ */
+export interface RecurringMonthSummary {
+  month: string; // YYYY-MM
+  expenses: number;
+  income: number;
+  carryover: number;
+  totalWithCarryover: number;
+  overdraftRemaining: number;
+}

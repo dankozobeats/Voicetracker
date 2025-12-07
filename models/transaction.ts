@@ -25,6 +25,7 @@ export interface Transaction {
   category: TransactionCategory;
   categoryId?: string | null;
   categoryInfo?: CategoryInfo | null;
+  budgetId?: string | null;
   description?: string | null;
   merchant?: string | null;
   date: string;

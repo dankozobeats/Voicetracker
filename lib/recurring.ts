@@ -1,9 +1,15 @@
 import type { PostgrestResponse, PostgrestSingleResponse } from '@supabase/supabase-js';
 
-import { RECURRING_LOOKAHEAD_MONTHS, type RecurringInstance, type RecurringRule } from '@/models/recurring';
+import {
+  RECURRING_LOOKAHEAD_MONTHS,
+  type RecurringInstance,
+  type RecurringMonthSummary,
+  type RecurringRule,
+} from '@/models/recurring';
 import { parseRecurringRule } from '@/lib/validation';
 import { applyUserFilter, handleServiceError, resolveUserId } from '@/lib/utils';
 import { getServerSupabaseClient } from '@/lib/supabase';
+import { BudgetLedgerService } from '@/lib/budget';
 
 const TABLE_NAME = 'recurring_rules';
 const SELECT_FIELDS =
@@ -21,6 +27,21 @@ export class RecurringService {
    */
   private normalizeToUtcMidday(date: Date): Date {
     return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12, 0, 0, 0));
+  }
+
+  /**
+   * Generate month keys (YYYY-MM) starting from current month for the lookahead window.
+   */
+  private buildMonthKeys(lookAheadMonths: number): string[] {
+    const anchor = this.normalizeToUtcMidday(new Date());
+    const start = this.addMonthsUtc(anchor, 1, 1); // Commence sur le mois suivant pour éviter de ré-imputer le mois courant
+    const months: string[] = [];
+    for (let i = 0; i < lookAheadMonths; i += 1) {
+      const current = this.addMonthsUtc(start, i, 1);
+      const monthKey = `${current.getUTCFullYear()}-${String(current.getUTCMonth() + 1).padStart(2, '0')}`;
+      months.push(monthKey);
+    }
+    return months;
   }
 
   /**
@@ -198,6 +219,8 @@ export class RecurringService {
           amount: rule.amount,
           category: rule.category,
           description: rule.description,
+          direction: rule.direction,
+          kind: 'recurring',
         });
         cursor = this.incrementCursor(cursor, rule);
       }
@@ -212,7 +235,10 @@ export class RecurringService {
    * @returns - numeric total
    */
   computeTotalFixedCharges(instances: RecurringInstance[]): number {
-    return instances.reduce((sum, instance) => sum + instance.amount, 0);
+    return instances.reduce((sum, instance) => {
+      if (instance.direction === 'income') return sum;
+      return sum + instance.amount;
+    }, 0);
   }
 
   /**
@@ -224,6 +250,7 @@ export class RecurringService {
   computeMonthlyFixedCharges(instances: RecurringInstance[], monthKey?: string): number {
     const targetMonth = monthKey ?? new Date().toISOString().slice(0, 7);
     return instances.reduce((sum, instance) => {
+      if (instance.direction === 'income') return sum;
       return instance.dueDate.slice(0, 7) === targetMonth ? sum + instance.amount : sum;
     }, 0);
   }
@@ -298,6 +325,90 @@ export class RecurringService {
     }
 
     return total;
+  }
+
+  /**
+   * Fetch the current overdraft to recover based on the master budget.
+   * It mirrors the carry-over script logic: if master.remaining is negative, we carry it forward.
+   */
+  private async computeStartingOverdraft(userId?: string): Promise<number> {
+    const ledger = new BudgetLedgerService(this.client);
+    const budgets = await ledger.listForUser(userId);
+    const master = budgets.find((b) => b.isMaster) ?? null;
+    if (!master) return 0;
+
+    const allocated = budgets.filter((b) => b.parentId === master.id).reduce((sum, b) => sum + b.amount, 0);
+    const computedRemaining = master.amount - allocated;
+    const dbRemaining = Number.isFinite(Number(master.remaining)) ? Number(master.remaining) : computedRemaining;
+    const remaining = Math.min(dbRemaining, computedRemaining);
+    return Math.max(0, -remaining);
+  }
+
+  /**
+   * Round currency values to 2 decimals.
+   */
+  private roundCurrency(value: number): number {
+    return Math.round(value * 100) / 100;
+  }
+
+  /**
+   * Generate upcoming instances with a synthetic carry-over line per month to track overdraft catch-up.
+   * The carry-over amount is recalculated each month based on remaining overdraft, remaining months,
+   * and the room left after fixed charges and recurring income.
+   */
+  async generateUpcomingWithCarryover(
+    rules: RecurringRule[],
+    userId?: string,
+    lookAheadMonths = RECURRING_LOOKAHEAD_MONTHS,
+  ): Promise<{ instances: RecurringInstance[]; monthSummaries: RecurringMonthSummary[] }> {
+    const baseInstances = this.generateUpcomingInstances(rules, lookAheadMonths);
+    const monthKeys = this.buildMonthKeys(lookAheadMonths);
+    const startingOverdraft = await this.computeStartingOverdraft(userId);
+
+    const monthSummaries: RecurringMonthSummary[] = [];
+    const carryovers: RecurringInstance[] = [];
+    let overdraftRemaining = startingOverdraft;
+
+    for (let idx = 0; idx < monthKeys.length; idx += 1) {
+      const month = monthKeys[idx];
+      const expenses = baseInstances
+        .filter((instance) => instance.direction !== 'income' && instance.dueDate.slice(0, 7) === month)
+        .reduce((sum, instance) => sum + instance.amount, 0);
+      const income = baseInstances
+        .filter((instance) => instance.direction === 'income' && instance.dueDate.slice(0, 7) === month)
+        .reduce((sum, instance) => sum + instance.amount, 0);
+
+      // Priorité : on rembourse le découvert en premier avec le revenu du mois (jusqu'à épuisement du revenu).
+      const carryoverAmount = overdraftRemaining > 0 ? this.roundCurrency(Math.min(overdraftRemaining, income)) : 0;
+
+      if (carryoverAmount > 0) {
+        carryovers.push({
+          ruleId: `carryover-${month}`,
+          dueDate: `${month}-01T12:00:00.000Z`,
+          amount: carryoverAmount,
+          category: 'autre',
+          description: 'Rattrapage découvert',
+          direction: 'expense',
+          kind: 'carryover',
+        });
+      }
+
+      // Met à jour le découvert restant pour le mois suivant :
+      // Nouvel overdraft = ancien overdraft + charges - revenus (paiement en priorité sur le découvert)
+      // Cette formule équivaut à : payer le découvert jusqu'à hauteur du revenu, puis payer les charges avec le reste.
+      overdraftRemaining = this.roundCurrency(Math.max(overdraftRemaining + expenses - income, 0));
+
+      monthSummaries.push({
+        month,
+        expenses: this.roundCurrency(expenses),
+        income: this.roundCurrency(income),
+        carryover: carryoverAmount,
+        totalWithCarryover: this.roundCurrency(expenses + carryoverAmount),
+        overdraftRemaining,
+      });
+    }
+
+    return { instances: [...baseInstances, ...carryovers], monthSummaries };
   }
 
   /**

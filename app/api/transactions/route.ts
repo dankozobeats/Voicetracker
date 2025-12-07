@@ -97,9 +97,29 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
     } = await supabase.auth.getSession();
     const userId = session?.user?.id;
 
-    const id = request.nextUrl.searchParams.get('id');
-    if (!id) return json({ error: 'id is required' }, 400);
-    await transactionService.softDelete(id, userId);
+    let ids: string[] = [];
+
+    // Support legacy ?id=... and bulk via JSON body { ids: [...] }
+    const idParam = request.nextUrl.searchParams.get('id');
+    if (idParam) {
+      ids = [idParam];
+    } else {
+      const contentType = request.headers.get('content-type') ?? '';
+      if (contentType.toLowerCase().includes('application/json')) {
+        const body = await request.json().catch(() => null);
+        if (body && Array.isArray(body.ids)) {
+          ids = body.ids.map((val) => String(val)).filter(Boolean);
+        }
+      }
+    }
+
+    if (!ids.length) return json({ error: 'id or ids[] are required' }, 400);
+
+    if (ids.length === 1) {
+      await transactionService.softDelete(ids[0], userId);
+    } else {
+      await transactionService.softDeleteMany(ids, userId);
+    }
     return json({ success: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to delete transaction';

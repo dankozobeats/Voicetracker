@@ -1,0 +1,68 @@
+'use client';
+
+import type React from 'react';
+import { useMemo, useState } from 'react';
+import { usePathname } from 'next/navigation';
+
+import MicroFAB from '@/components/MicroFAB';
+import MobileNav from '@/components/MobileNav';
+import SideMenu from '@/components/SideMenu';
+import TopBar from '@/components/TopBar';
+
+interface AppShellProps {
+  children: React.ReactNode;
+}
+
+const FULLSCREEN_ROUTES = ['/record'];
+
+/**
+ * Global SaaS shell with sidebar, top bar, mobile drawer, and bottom nav.
+ * @param props - page content
+ * @returns - layout container
+ */
+export default function AppShell({ children }: AppShellProps) {
+  const pathname = usePathname();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const isFullScreen = useMemo(() => FULLSCREEN_ROUTES.some((route) => pathname.startsWith(route)), [pathname]);
+
+  if (isFullScreen) {
+    return <>{children}</>;
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-50">
+      <div className="flex min-h-screen">
+        <SideMenu />
+        <div className="flex flex-1 flex-col lg:pl-0">
+          <TopBar pathname={pathname} onMenuClick={() => setDrawerOpen(true)} />
+          <main className="flex-1 px-4 pb-20 pt-4 md:px-6 md:pb-10 lg:px-8">{children}</main>
+        </div>
+      </div>
+      <MobileNav />
+      <MicroFAB />
+
+      {drawerOpen ? (
+        <div className="fixed inset-0 z-50 flex bg-black/40 backdrop-blur-sm lg:hidden" role="dialog" aria-modal="true">
+          <div className="h-full w-72 max-w-[80vw] border-r border-slate-200 bg-white p-4 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">VoiceTracker</p>
+                <p className="text-lg font-semibold text-slate-900 dark:text-white">Navigation</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(false)}
+                className="rounded-lg border border-slate-300 bg-white/80 px-2 py-1 text-xs text-slate-700 hover:border-indigo-500 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200"
+              >
+                Fermer
+              </button>
+            </div>
+            <SideMenu variant="overlay" onNavigate={() => setDrawerOpen(false)} />
+          </div>
+          <button className="h-full flex-1" type="button" onClick={() => setDrawerOpen(false)} aria-label="Fermer le menu" />
+        </div>
+      ) : null}
+    </div>
+  );
+}

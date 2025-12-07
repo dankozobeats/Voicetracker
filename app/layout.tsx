@@ -1,5 +1,10 @@
+import type React from 'react'
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
+
+import AppShell from '@/components/AppShell'
+import AuthProvider from '@/app/providers/AuthProvider'
+import { ThemeProvider } from '@/lib/theme'
 
 export const metadata: Metadata = {
   title: 'VoiceTracker',
@@ -17,9 +22,13 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="fr">
-      <body className="min-h-screen bg-slate-950 text-slate-50 antialiased">
-        {children}
+    <html lang="fr" suppressHydrationWarning>
+      <body className="min-h-screen antialiased">
+        <AuthProvider>
+          <ThemeProvider>
+            <AppShell>{children}</AppShell>
+          </ThemeProvider>
+        </AuthProvider>
       </body>
     </html>
   )

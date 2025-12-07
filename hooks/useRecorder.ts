@@ -2,10 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import type { TransactionRecord } from '@/lib/schemas';
+
 export type RecorderStatus = 'idle' | 'recording' | 'ready' | 'processing' | 'success' | 'error';
+export type SubmissionMode = 'audio' | 'text';
 
 interface UploadResult {
-  transcription: string | null;
+  transcript: string | null;
+  extracted: TransactionRecord | null;
+  mode: SubmissionMode;
   error?: string;
 }
 
@@ -14,15 +19,18 @@ interface UseRecorderReturn {
   status: RecorderStatus;
   audioBlob: Blob | null;
   transcription: string | null;
+  extracted: TransactionRecord | null;
+  lastMode: SubmissionMode | null;
   error: string | null;
   startRecording: () => Promise<void>;
   stopRecording: () => void;
   reset: () => void;
   uploadAudio: () => Promise<UploadResult | null>;
+  submitManualText: (text: string) => Promise<UploadResult | null>;
 }
 
 /**
- * useRecorder encapsulates MediaRecorder usage and the `/api/transcribe` upload flow.
+ * useRecorder encapsulates MediaRecorder usage and the `/api/voice` upload flow.
  * It returns helpers to start/stop recording and to upload the recorded blob.
  */
 const debug = (...args: unknown[]) => {
@@ -36,6 +44,8 @@ export default function useRecorder(): UseRecorderReturn {
   const [status, setStatus] = useState<RecorderStatus>('idle');
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [transcription, setTranscription] = useState<string | null>(null);
+  const [extracted, setExtracted] = useState<TransactionRecord | null>(null);
+  const [lastMode, setLastMode] = useState<SubmissionMode | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -167,6 +177,8 @@ export default function useRecorder(): UseRecorderReturn {
     chunksRef.current = [];
     setAudioBlob(null);
     setTranscription(null);
+    setExtracted(null);
+    setLastMode(null);
     setError(null);
     setStatus('idle');
     setIsRecording(false);
@@ -192,38 +204,116 @@ export default function useRecorder(): UseRecorderReturn {
     setError(null);
 
     try {
-      const normalizedBlob = audioBlob.type
-        ? audioBlob
-        : new Blob([audioBlob], { type: 'audio/webm' });
+      const normalizedBlob = audioBlob.type ? audioBlob : new Blob([audioBlob], { type: 'audio/webm' });
+      const file = new File([normalizedBlob], 'voice.webm', { type: normalizedBlob.type || 'audio/webm' });
+      const formData = new FormData();
+      formData.append('audio', file);
 
-      const response = await fetch('/api/transcribe', {
+      const response = await fetch('/api/voice', {
         method: 'POST',
-        body: normalizedBlob,
+        body: formData,
       });
 
-      const payload = await response.json();
+      const payload = await response.json().catch(() => null);
+      const ok = payload?.ok === true;
+      const data = ok ? (payload.data as TransactionRecord | null) : null;
+      const transcript = typeof data?.ai_raw === 'string' ? data.ai_raw : null;
+      const payloadMode: SubmissionMode = 'audio';
 
-      if (!response.ok) {
+      if (!ok) {
         const message = payload?.error?.message ?? 'Une erreur est survenue pendant l\'upload';
         setError(message);
         setStatus('error');
-        return { transcription: null, error: message };
+        setExtracted(null);
+        setTranscription(transcript);
+        setLastMode(payloadMode);
+        return { transcript, extracted: data, mode: payloadMode, error: message };
       }
 
-      setTranscription(payload.text ?? payload.transcription ?? null);
+      setTranscription(transcript);
+      setExtracted(data);
+      setLastMode(payloadMode);
       setAudioBlob(null);
       setStatus('success');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('expenses:updated'));
+      }
       resetTimerRef.current = setTimeout(() => {
         reset();
       }, 4000);
-      return { transcription: payload.transcription ?? null };
+      return { transcript, extracted: data, mode: payloadMode };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Impossible d\'envoyer l\'audio';
       setError(message);
       setStatus('error');
-      return { transcription: null, error: message };
+      setExtracted(null);
+      return { transcript: null, extracted: null, mode: 'audio', error: message };
     }
   }, [audioBlob, reset, status]);
+
+  const submitManualText = useCallback(
+    async (text: string): Promise<UploadResult | null> => {
+      const sanitized = text.trim();
+      if (!sanitized) {
+        setError('Le texte ne peut pas être vide');
+        setStatus('error');
+        return null;
+      }
+
+      if (status === 'processing') {
+        debug('submitManualText ignored because already processing');
+        return null;
+      }
+
+      setStatus('processing');
+      setError(null);
+
+      try {
+        const response = await fetch('/api/voice?type=text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: sanitized }),
+        });
+
+        const payload = await response.json().catch(() => null);
+        const ok = payload?.ok === true;
+        const data = ok ? (payload.data as TransactionRecord | null) : null;
+        const transcript = typeof data?.ai_raw === 'string' ? data.ai_raw : null;
+        const payloadMode: SubmissionMode = 'text';
+
+        if (!ok) {
+          const message = payload?.error?.message ?? 'Une erreur est survenue pendant l\'analyse du texte';
+          setError(message);
+          setStatus('error');
+          setExtracted(null);
+          setTranscription(transcript);
+          setLastMode(payloadMode);
+          return { transcript, extracted: data, mode: payloadMode, error: message };
+        }
+
+        setTranscription(transcript);
+        setExtracted(data);
+        setLastMode(payloadMode);
+        setAudioBlob(null);
+        setStatus('success');
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('expenses:updated'));
+        }
+        resetTimerRef.current = setTimeout(() => {
+          reset();
+        }, 4000);
+
+        return { transcript, extracted: data, mode: payloadMode };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Impossible d\'envoyer le texte';
+        setError(message);
+        setStatus('error');
+        setExtracted(null);
+        return { transcript: null, extracted: null, mode: 'text', error: message };
+      }
+    },
+    [reset, status],
+  );
 
   useEffect(() => () => {
     cleanupStream();
@@ -237,10 +327,13 @@ export default function useRecorder(): UseRecorderReturn {
     status,
     audioBlob,
     transcription,
+    extracted,
+    lastMode,
     error,
     startRecording,
     stopRecording,
     reset,
     uploadAudio,
+    submitManualText,
   };
 }

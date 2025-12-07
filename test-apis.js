@@ -31,17 +31,8 @@ async function testAPIs() {
     console.log('❌ Supabase: Erreur de connexion', err.message);
   }
 
-  // Test OpenAI (simple validation de clé)
-  console.log('\n2. Test OpenAI API Key...');
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (openaiKey && openaiKey.startsWith('sk-') && openaiKey.length > 20) {
-    console.log('✅ OpenAI: Format de clé valide');
-  } else {
-    console.log('❌ OpenAI: Format de clé invalide');
-  }
-
   // Test Groq (simple validation de clé)
-  console.log('\n3. Test Groq API Key...');
+  console.log('\n2. Test Groq API Key...');
   const groqKey = process.env.GROQ_API_KEY;
   if (groqKey && groqKey.startsWith('gsk_') && groqKey.length > 20) {
     console.log('✅ Groq: Format de clé valide');

@@ -12,7 +12,7 @@ const SELECT_FIELDS =
   'id, user_id, category, monthly_limit, alert_threshold, start_date, end_date, created_at, updated_at';
 const BUDGET_TABLE = 'budgets';
 const BUDGET_SELECT =
-  'id, user_id, name, amount, remaining, is_master, parent_id, category, created_at, updated_at';
+  'id, user_id, name, amount, remaining, is_master, parent_id, category, created_at, updated_at, auto_sync_from_salary';
 
 /**
  * Service for handling budget rules and derived calculations.
@@ -215,6 +215,7 @@ export class BudgetLedgerService {
       amount: Number(row.amount),
       remaining: Number(row.remaining),
       isMaster: Boolean(row.is_master),
+      autoSyncFromSalary: Boolean(row.auto_sync_from_salary),
       parentId: (row.parent_id as string | null | undefined) ?? null,
       category: (row.category as TransactionCategory | null | undefined) ?? null,
       createdAt: row.created_at as string | undefined,
@@ -267,6 +268,117 @@ export class BudgetLedgerService {
   }
 
   /**
+   * Identifie une catégorie de salaire via metadata ou texte.
+   */
+  private isSalaryCategory(value: unknown): boolean {
+    return typeof value === 'string' && value.toLowerCase().includes('salaire');
+  }
+
+  /**
+   * Construit les bornes du mois courant en UTC.
+   */
+  private buildCurrentMonthRange(referenceDate = new Date()): { start: string; end: string } {
+    const year = referenceDate.getUTCFullYear();
+    const month = referenceDate.getUTCMonth();
+    const start = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)).toISOString();
+    const end = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999)).toISOString();
+    return { start, end };
+  }
+
+  /**
+   * Alimente le budget principal auto_sync_from_salary avec la somme des revenus salaire du mois courant.
+   * - Crée un master nommé "Salaire" s'il n'existe pas encore.
+   * - Met à jour remaining en tenant compte des sous-budgets déjà alloués.
+   */
+  async syncMasterToSalary(userId?: string, referenceDate = new Date()): Promise<BudgetEntity | null> {
+    const scopedUserId = resolveUserId(userId, { required: true });
+    const { start, end } = this.buildCurrentMonthRange(referenceDate);
+
+    const { data: incomeRows, error: incomeError } = await this.client
+      .from('transactions')
+      .select('id, amount, metadata, description')
+      .eq('user_id', scopedUserId)
+      .eq('type', 'income')
+      .gte('date', start)
+      .lte('date', end)
+      .is('deleted_at', null);
+
+    if (incomeError) {
+      console.warn('[budget-ledger] Failed to fetch income rows for salary sync', incomeError);
+      return null;
+    }
+
+    const salaryTotal = (incomeRows ?? []).reduce((sum, row) => {
+      const metadata = (row.metadata as Record<string, unknown> | null | undefined) ?? undefined;
+      const metaCategory = metadata?.category as string | undefined;
+      const description = (row.description as string | null | undefined) ?? undefined;
+      const isSalary = this.isSalaryCategory(metaCategory) || this.isSalaryCategory(description);
+      if (!isSalary) return sum;
+      const amount = Number(row.amount);
+      return Number.isFinite(amount) ? sum + amount : sum;
+    }, 0);
+
+    let budgets = await this.listForUser(scopedUserId);
+    let master = budgets.find((b) => b.isMaster) ?? null;
+
+    // Crée un master par défaut si des salaires sont trouvés mais aucun budget principal n'existe.
+    if (!master && salaryTotal > 0) {
+      const { data: created, error: createError } = await this.client
+        .from(BUDGET_TABLE)
+        .insert({
+          user_id: scopedUserId,
+          name: 'Salaire',
+          amount: salaryTotal,
+          remaining: salaryTotal,
+          is_master: true,
+          parent_id: null,
+          category: null,
+          auto_sync_from_salary: true,
+        })
+        .select(BUDGET_SELECT)
+        .single();
+
+      if (createError || !created) {
+        console.warn('[budget-ledger] Failed to create master budget during salary sync', createError);
+        return null;
+      }
+
+      master = this.mapBudgetRow(created);
+      budgets = [master, ...budgets];
+    }
+
+    if (!master || !master.autoSyncFromSalary) {
+      return master;
+    }
+
+    const allocated = budgets.filter((b) => b.parentId === master.id).reduce((sum, b) => sum + b.amount, 0);
+    const remaining = salaryTotal - allocated;
+
+    if (master.amount === salaryTotal && master.remaining === remaining) {
+      return master;
+    }
+
+    const { data: updated, error: updateError } = await this.client
+      .from(BUDGET_TABLE)
+      .update({
+        amount: salaryTotal,
+        remaining,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', master.id)
+      .eq('user_id', scopedUserId)
+      .select(BUDGET_SELECT)
+      .maybeSingle();
+
+    if (updateError) {
+      console.warn('[budget-ledger] Failed to sync master budget with salary', updateError);
+      return { ...master, amount: salaryTotal, remaining };
+    }
+
+    return updated ? this.mapBudgetRow(updated) : { ...master, amount: salaryTotal, remaining };
+  }
+
+  /**
    * Liste tous les budgets d'un utilisateur.
    */
   async listForUser(userId?: string): Promise<BudgetEntity[]> {
@@ -290,6 +402,7 @@ export class BudgetLedgerService {
     const scopedUserId = resolveUserId(userId, { required: true });
     const normalizedName = String(payload.name ?? '').trim();
     const normalizedAmount = Number(payload.amount);
+    const normalizedAutoSync = payload.autoSyncFromSalary ?? undefined;
     if (!normalizedName || Number.isNaN(normalizedAmount) || normalizedAmount < 0) {
       throw new Error('name and amount are required');
     }
@@ -309,6 +422,7 @@ export class BudgetLedgerService {
           amount: normalizedAmount,
           remaining: normalizedAmount,
           is_master: true,
+          auto_sync_from_salary: payload.autoSyncFromSalary ?? true,
           parent_id: null,
           category: null,
         })
@@ -344,6 +458,7 @@ export class BudgetLedgerService {
         is_master: false,
         parent_id: parentId,
         category: payload.category,
+        auto_sync_from_salary: false,
       })
       .select(BUDGET_SELECT)
       .single();
@@ -396,6 +511,7 @@ export class BudgetLedgerService {
           name: normalizedName,
           amount: normalizedAmount,
           remaining,
+          auto_sync_from_salary: normalizedAutoSync ?? existing.autoSyncFromSalary,
           updated_at: new Date().toISOString(),
         })
         .eq('id', id)
@@ -445,6 +561,7 @@ export class BudgetLedgerService {
         amount: normalizedAmount,
         remaining,
         category: payload.category ?? existing.category,
+        auto_sync_from_salary: false,
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
@@ -534,6 +651,9 @@ export class BudgetLedgerService {
     for (const tx of transactions) {
       const type = tx.type ?? 'expense';
       if (type === 'income' || type === 'transfer') continue;
+      // Ignore deferred purchases (Floa) until the repayment hits next month.
+      const isDeferredPurchase = tx.paymentSource === 'floa' && !tx.floaRepayment;
+      if (isDeferredPurchase) continue;
       const amount = tx.amount;
       if (tx.budgetId) {
         budgetSpend.set(tx.budgetId, (budgetSpend.get(tx.budgetId) ?? 0) + amount);

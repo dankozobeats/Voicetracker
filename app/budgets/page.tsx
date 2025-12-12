@@ -23,10 +23,14 @@ export default async function BudgetsPage() {
   const {
     data: { session },
   } = await supabase.auth.getSession();
-  const userId = session?.user?.id;
+  const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
 
   const budgetLedger = new BudgetLedgerService();
   const transactionService = new TransactionService();
+
+  if (userId) {
+    await budgetLedger.syncMasterToSalary(userId);
+  }
 
   const [budgets, transactions] = userId
     ? await Promise.all([budgetLedger.listForUser(userId), transactionService.list({}, userId)])

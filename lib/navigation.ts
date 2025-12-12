@@ -1,4 +1,4 @@
-import { Home, List, Mic, Repeat, Settings, Sparkles, Wallet } from 'lucide-react';
+import { Clock, Home, List, Mic, Repeat, Settings, Sparkles, Wallet } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 export interface NavItem {
@@ -15,6 +15,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', href: '/dashboard', icon: Home },
   { id: 'transactions', label: 'Transactions', href: '/transactions', icon: List },
   { id: 'budget', label: 'Budgets', href: '/budgets', icon: Wallet },
+  { id: 'deferred', label: 'Paiements différés', href: '/deferred', icon: Clock },
   { id: 'recurring', label: 'Charges fixes', href: '/recurring', icon: Repeat },
   { id: 'insights', label: 'Insights', href: '/insights', icon: Sparkles },
   { id: 'voice', label: 'Enregistrer', href: '/voice', icon: Mic },

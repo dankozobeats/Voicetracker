@@ -8,6 +8,7 @@ export interface RecurringRule {
   userId: string;
   amount: number;
   category: TransactionCategory;
+  paymentSource: 'sg' | 'floa';
   description?: string | null;
   direction: 'income' | 'expense';
   cadence: 'weekly' | 'monthly' | 'quarterly' | 'yearly';
@@ -30,6 +31,7 @@ export interface RecurringInstance {
   description?: string | null;
   direction: 'income' | 'expense';
   kind?: 'recurring' | 'carryover';
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -47,4 +49,17 @@ export interface RecurringMonthSummary {
   carryover: number;
   totalWithCarryover: number;
   overdraftRemaining: number;
+  // Treasury-focused fields (added for SG/Floa forecast)
+  sgChargesTotal?: number;
+  floaRepaymentsTotal?: number;
+  overdraftIncoming?: number;
+  overdraftOutgoing?: number;
+  salary?: number;
+  finalBalance?: number;
+  items?: {
+    type: 'sg_charge' | 'floa_repayment' | 'overdraft';
+    ruleId?: string;
+    amount: number;
+    description?: string | null;
+  }[];
 }

@@ -27,8 +27,10 @@ export async function GET(): Promise<NextResponse> {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+    const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
     if (!userId) return json({ error: 'Unauthorized' }, 401);
+
+    await budgetLedger.syncMasterToSalary(userId);
 
     const [budgets, transactions] = await Promise.all([
       budgetLedger.listForUser(userId),
@@ -52,7 +54,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+    const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
     if (!userId) return json({ error: 'Unauthorized' }, 401);
 
     const payload = await request.json();
@@ -64,6 +66,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       isMaster: Boolean(payload.isMaster),
       parentId: payload.parentId ?? null,
       category: payload.category ?? null,
+      autoSyncFromSalary: Boolean(payload.autoSyncFromSalary),
     };
 
     if (!budgetPayload.name || Number.isNaN(budgetPayload.amount)) {

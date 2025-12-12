@@ -25,7 +25,7 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+    const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
     if (!userId) return json({ error: 'Unauthorized' }, 401);
 
     const payload = await request.json();
@@ -35,6 +35,7 @@ export async function PATCH(request: NextRequest, context: { params: { id: strin
       isMaster: Boolean(payload.isMaster),
       parentId: payload.parentId ?? null,
       category: payload.category ?? null,
+      autoSyncFromSalary: Boolean(payload.autoSyncFromSalary),
     };
 
     if (!budgetPayload.name || Number.isNaN(budgetPayload.amount)) {
@@ -65,7 +66,7 @@ export async function DELETE(_request: NextRequest, context: { params: { id: str
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+    const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
     if (!userId) return json({ error: 'Unauthorized' }, 401);
 
     await budgetLedger.deleteBudget(context.params.id, userId);

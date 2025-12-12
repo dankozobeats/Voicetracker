@@ -111,6 +111,40 @@ La page d'enregistrement vocal est disponible à `/record`. Elle utilise la comp
 
 Voir `docs/03-api-documentation.md` pour la documentation de l'endpoint qui accepte un `multipart/form-data` contenant `audio` et retourne `{ expense, transcription }`.
 
+## 🤖 Assistant IA (VPS)
+
+- **Proxy sécurisée** : l'endpoint `POST /api/ai-assistant` relaie vos requêtes vers `https://ai.automationpro.cloud/chat`, ce qui permet de garder la clé `x-api-key` côté serveur.
+- **Payload attendu** :
+
+```json
+{
+  "message": "string",
+  "userId": "string" // facultatif, par défaut `AI_DEFAULT_USER_ID`
+}
+```
+
+- **Réponse** : renvoie l'objet brut retourné par votre IA (champ `reply`, éventuelles `memories`, etc.).
+- **Variables à configurer côté serveur** :
+
+```env
+AI_API_KEY=<# fourni par votre VPS Groq >
+AI_API_URL=https://ai.automationpro.cloud
+AI_DEFAULT_USER_ID=voicetrack-user
+```
+
+- **Usage client** :
+
+```ts
+const res = await fetch('/api/ai-assistant', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ message, userId: supabaseUserId }),
+});
+const payload = await res.json();
+```
+
+> `AI_API_KEY` reste uniquement côté serveur ; toutes les requêtes du navigateur passent par l'API Next.js.
+
 ## ⚙️ Notes d'intégration & sécurité
 
 - **Server-side inserts:** All inserts to `expenses` performed by `/api/voice` use the `SUPABASE_SERVICE_ROLE_KEY` via `getServerSupabaseClient()` (`lib/supabase.ts`). Ensure this key is kept secret and set only in Vercel/Production envs.

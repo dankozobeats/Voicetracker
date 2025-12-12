@@ -1,6 +1,6 @@
 'use client';
 
-import { Bell, Menu, User } from 'lucide-react';
+import { Bell, Menu, PanelLeftClose, PanelRight, User } from 'lucide-react';
 import Link from 'next/link';
 
 import { NAV_ITEMS } from '@/lib/navigation';
@@ -9,6 +9,8 @@ import ThemeToggle from '@/components/ThemeToggle';
 interface TopBarProps {
   pathname: string;
   onMenuClick?: () => void;
+  onToggleSidebar?: () => void;
+  sidebarHidden?: boolean;
   userName?: string;
   userEmail?: string;
 }
@@ -18,7 +20,14 @@ interface TopBarProps {
  * @param props - current pathname and callbacks for mobile drawer
  * @returns - header component
  */
-export default function TopBar({ pathname, onMenuClick, userName = 'User', userEmail = 'user@example.com' }: TopBarProps) {
+export default function TopBar({
+  pathname,
+  onMenuClick,
+  onToggleSidebar,
+  sidebarHidden = false,
+  userName = 'User',
+  userEmail = 'user@example.com',
+}: TopBarProps) {
   const currentNav = NAV_ITEMS.find((item) => pathname.startsWith(item.href));
 
   return (
@@ -31,6 +40,14 @@ export default function TopBar({ pathname, onMenuClick, userName = 'User', userE
           aria-label="Ouvrir le menu"
         >
           <Menu className="h-5 w-5" />
+        </button>
+        <button
+          type="button"
+          onClick={onToggleSidebar}
+          className="hidden h-10 w-10 items-center justify-center rounded-lg border border-slate-300 bg-white/70 text-slate-700 hover:border-indigo-500 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 lg:inline-flex"
+          aria-label={sidebarHidden ? 'Afficher le menu' : 'Masquer le menu'}
+        >
+          {sidebarHidden ? <PanelRight className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
         </button>
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{currentNav?.id ?? 'VoiceTracker'}</p>

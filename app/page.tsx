@@ -1,8 +1,6 @@
-import { redirect } from 'next/navigation'
-
 /**
- * Redirect root path to the main dashboard.
+ * Root page is handled by Next.js redirect config.
  */
 export default function HomeRedirect() {
-  redirect('/dashboard')
+  return null
 }

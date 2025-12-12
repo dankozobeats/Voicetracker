@@ -13,6 +13,8 @@ import { BudgetLedgerService } from '@/lib/budget';
 
 const TABLE_NAME = 'recurring_rules';
 const SELECT_FIELDS =
+  'id, user_id, amount, category, description, direction, cadence, day_of_month, weekday, start_date, end_date, payment_source, created_at, updated_at';
+const FALLBACK_FIELDS =
   'id, user_id, amount, category, description, direction, cadence, day_of_month, weekday, start_date, end_date, created_at, updated_at';
 
 /**
@@ -58,6 +60,13 @@ export class RecurringService {
   }
 
   /**
+   * Compute first day of next month anchored at noon UTC (used for Floa repayments).
+   */
+  private nextMonthAnchor(date: Date): Date {
+    return this.addMonthsUtc(this.normalizeToUtcMidday(date), 1, 1);
+  }
+
+  /**
    * Map raw Supabase row to domain recurring rule.
    * @param row - database record
    * @returns - recurring rule
@@ -75,6 +84,7 @@ export class RecurringService {
       weekday: (row.weekday as number | null | undefined) ?? null,
       startDate: row.start_date as string,
       endDate: (row.end_date as string | null | undefined) ?? null,
+      paymentSource: (row.payment_source as RecurringRule['paymentSource']) ?? 'sg',
       createdAt: row.created_at as string | undefined,
       updatedAt: row.updated_at as string | undefined,
     };
@@ -87,17 +97,23 @@ export class RecurringService {
    */
   async listRules(userId?: string): Promise<RecurringRule[]> {
     const scopedUserId = resolveUserId(userId);
-    const { data, error }: PostgrestResponse<Record<string, unknown>> = await applyUserFilter(
-      this.client.from(TABLE_NAME).select(SELECT_FIELDS),
-      scopedUserId,
-    )
+    let query = applyUserFilter(this.client.from(TABLE_NAME).select(SELECT_FIELDS), scopedUserId)
       .order('created_at', { ascending: true })
       .limit(100);
 
+    let { data, error }: PostgrestResponse<Record<string, unknown>> = await query;
+
     if (error) {
-      // Swallow missing table or empty dataset to avoid crashing the dashboard.
-      console.warn('[recurring] Failed to fetch rules, returning empty list', error);
-      return [];
+      console.warn('[recurring] Full select failed, trying fallback fields', error);
+      const fallbackQuery = applyUserFilter(this.client.from(TABLE_NAME).select(FALLBACK_FIELDS), scopedUserId)
+        .order('created_at', { ascending: true })
+        .limit(100);
+      const fallback = await fallbackQuery;
+      data = fallback.data ?? [];
+      if (fallback.error) {
+        console.warn('[recurring] Fallback select failed, returning empty list', fallback.error);
+        return [];
+      }
     }
 
     return (data ?? []).map((row) => this.mapRow(row));
@@ -126,6 +142,7 @@ export class RecurringService {
         weekday: parsed.weekday,
         start_date: parsed.startDate,
         end_date: parsed.endDate,
+        payment_source: parsed.paymentSource ?? 'sg',
       })
       .select(SELECT_FIELDS)
       .single();
@@ -159,6 +176,7 @@ export class RecurringService {
         weekday: parsed.weekday,
         start_date: parsed.startDate,
         end_date: parsed.endDate,
+        payment_source: parsed.paymentSource ?? 'sg',
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
@@ -197,7 +215,7 @@ export class RecurringService {
     const instances: RecurringInstance[] = [];
     const now = this.normalizeToUtcMidday(new Date());
     const horizon = this.normalizeToUtcMidday(new Date(now));
-    horizon.setMonth(horizon.getMonth() + lookAheadMonths);
+    horizon.setMonth(horizon.getMonth() + lookAheadMonths + 1); // +1 to capture Floa repayments following horizon
 
     for (const rule of rules) {
       let cursor = this.normalizeToUtcMidday(new Date(rule.startDate));
@@ -213,15 +231,34 @@ export class RecurringService {
       }
 
       while (cursor <= horizon && (!endDate || cursor <= endDate)) {
-        instances.push({
-          ruleId: rule.id,
-          dueDate: this.normalizeToUtcMidday(cursor).toISOString(),
-          amount: rule.amount,
-          category: rule.category,
-          description: rule.description,
-          direction: rule.direction,
-          kind: 'recurring',
-        });
+        const occurrenceDate = this.normalizeToUtcMidday(cursor);
+        if (rule.paymentSource === 'floa' && rule.direction === 'expense') {
+          // Skip immediate charge, schedule repayment next month as SG.
+          const repayDate = this.nextMonthAnchor(occurrenceDate);
+          if (repayDate <= horizon) {
+            const period = `${occurrenceDate.getUTCFullYear()}-${String(occurrenceDate.getUTCMonth() + 1).padStart(2, '0')}`;
+            instances.push({
+              ruleId: `${rule.id}-floa-${repayDate.toISOString()}`,
+              dueDate: repayDate.toISOString(),
+              amount: rule.amount,
+              category: 'floa_bank',
+              description: rule.description ? `Remboursement Floa – ${rule.description}` : 'Remboursement Floa',
+              direction: 'expense',
+              kind: 'recurring',
+              metadata: { recurringRuleId: rule.id, period },
+            });
+          }
+        } else {
+          instances.push({
+            ruleId: rule.id,
+            dueDate: occurrenceDate.toISOString(),
+            amount: rule.amount,
+            category: rule.category,
+            description: rule.description,
+            direction: rule.direction,
+            kind: 'recurring',
+          });
+        }
         cursor = this.incrementCursor(cursor, rule);
       }
     }
@@ -237,6 +274,8 @@ export class RecurringService {
   computeTotalFixedCharges(instances: RecurringInstance[]): number {
     return instances.reduce((sum, instance) => {
       if (instance.direction === 'income') return sum;
+      // Ignore deferred Floa repayments for fixed charges tally.
+      if (instance.category === 'floa_bank') return sum;
       return sum + instance.amount;
     }, 0);
   }
@@ -251,6 +290,8 @@ export class RecurringService {
     const targetMonth = monthKey ?? new Date().toISOString().slice(0, 7);
     return instances.reduce((sum, instance) => {
       if (instance.direction === 'income') return sum;
+      // Ignore deferred Floa purchases and repayments from the fixed charges tally.
+      if (instance.category === 'floa_bank') return sum;
       return instance.dueDate.slice(0, 7) === targetMonth ? sum + instance.amount : sum;
     }, 0);
   }
@@ -271,6 +312,8 @@ export class RecurringService {
     for (const rule of rules) {
       // Ignore les règles de type revenu pour le calcul des charges fixes
       if (rule.direction === 'income') continue;
+      // Ignore les dépenses Floa (elles seront remboursées le mois suivant)
+      if (rule.paymentSource === 'floa') continue;
 
       let cursor = this.normalizeToUtcMidday(new Date(rule.startDate));
       const endDate = rule.endDate ? this.normalizeToUtcMidday(new Date(rule.endDate)) : null;
@@ -352,6 +395,45 @@ export class RecurringService {
   }
 
   /**
+   * Fetch existing Floa repayment transactions over the horizon to avoid double counting
+   * and to include repayments originating from ad-hoc user transactions.
+   */
+  private async fetchFloaRepaymentTransactions(monthKeys: string[], userId?: string): Promise<RecurringInstance[]> {
+    const scopedUserId = resolveUserId(userId);
+    if (!monthKeys.length) return [];
+
+    const start = `${monthKeys[0]}-01T00:00:00.000Z`;
+    const [lastYear, lastMonth] = monthKeys[monthKeys.length - 1].split('-').map(Number);
+    const endDate = new Date(Date.UTC(lastYear, lastMonth, 0, 23, 59, 59, 999)).toISOString();
+
+    const { data, error } = await applyUserFilter(
+      this.client
+        .from('transactions')
+        .select('id, amount, description, date, metadata')
+        .eq('floa_repayment', true)
+        .gte('date', start)
+        .lte('date', endDate),
+      scopedUserId,
+    );
+
+    if (error) {
+      console.warn('[recurring] Failed to fetch Floa repayments, skipping tx inclusion', error);
+      return [];
+    }
+
+    return (data ?? []).map((row) => ({
+      ruleId: String(row.id),
+      dueDate: String(row.date),
+      amount: Number(row.amount),
+      category: 'floa_bank',
+      description: (row.description as string | null | undefined) ?? null,
+      direction: 'expense',
+      kind: 'recurring',
+      metadata: (row.metadata as Record<string, unknown> | null | undefined) ?? undefined,
+    }));
+  }
+
+  /**
    * Generate upcoming instances with a synthetic carry-over line per month to track overdraft catch-up.
    * The carry-over amount is recalculated each month based on remaining overdraft, remaining months,
    * and the room left after fixed charges and recurring income.
@@ -364,51 +446,111 @@ export class RecurringService {
     const baseInstances = this.generateUpcomingInstances(rules, lookAheadMonths);
     const monthKeys = this.buildMonthKeys(lookAheadMonths);
     const startingOverdraft = await this.computeStartingOverdraft(userId);
+    const floaRepaymentTx = await this.fetchFloaRepaymentTransactions(monthKeys, userId);
+
+    // If a repayment transaction already exists for a recurring rule+period, skip the virtual instance to avoid double counting.
+    const repaymentKeysFromTx = new Set(
+      floaRepaymentTx
+        .map((instance) => {
+          const meta = instance.metadata as Record<string, unknown> | undefined;
+          const key =
+            meta && typeof meta.recurringRuleId === 'string' && typeof meta.period === 'string'
+              ? `${meta.recurringRuleId}::${meta.period}`
+              : null;
+          return key;
+        })
+        .filter(Boolean) as string[],
+    );
+
+    const instances = [
+      ...baseInstances.filter((instance) => {
+        if (instance.category !== 'floa_bank') return true;
+        const meta = instance.metadata as Record<string, unknown> | undefined;
+        const key =
+          meta && typeof meta.recurringRuleId === 'string' && typeof meta.period === 'string'
+            ? `${meta.recurringRuleId}::${meta.period}`
+            : null;
+        return key ? !repaymentKeysFromTx.has(key) : true;
+      }),
+      ...floaRepaymentTx,
+    ];
 
     const monthSummaries: RecurringMonthSummary[] = [];
-    const carryovers: RecurringInstance[] = [];
     let overdraftRemaining = startingOverdraft;
 
     for (let idx = 0; idx < monthKeys.length; idx += 1) {
       const month = monthKeys[idx];
-      const expenses = baseInstances
-        .filter((instance) => instance.direction !== 'income' && instance.dueDate.slice(0, 7) === month)
+      const sgExpenses = instances
+        .filter(
+          (instance) =>
+            instance.direction !== 'income' &&
+            instance.dueDate.slice(0, 7) === month &&
+            instance.category !== 'floa_bank',
+        )
         .reduce((sum, instance) => sum + instance.amount, 0);
-      const income = baseInstances
+      const floaRepayments = instances
+        .filter((instance) => instance.direction !== 'income' && instance.dueDate.slice(0, 7) === month && instance.category === 'floa_bank')
+        .reduce((sum, instance) => sum + instance.amount, 0);
+      const income = instances
         .filter((instance) => instance.direction === 'income' && instance.dueDate.slice(0, 7) === month)
         .reduce((sum, instance) => sum + instance.amount, 0);
 
-      // Priorité : on rembourse le découvert en premier avec le revenu du mois (jusqu'à épuisement du revenu).
-      const carryoverAmount = overdraftRemaining > 0 ? this.roundCurrency(Math.min(overdraftRemaining, income)) : 0;
+      const solde = income - overdraftRemaining - sgExpenses - floaRepayments;
+      const nextOverdraft = this.roundCurrency(Math.max(-solde, 0));
 
-      if (carryoverAmount > 0) {
-        carryovers.push({
-          ruleId: `carryover-${month}`,
-          dueDate: `${month}-01T12:00:00.000Z`,
-          amount: carryoverAmount,
-          category: 'autre',
-          description: 'Rattrapage découvert',
-          direction: 'expense',
-          kind: 'carryover',
+      // Build detailed items for the month.
+      const monthItems: RecurringMonthSummary['items'] = [
+        ...instances
+          .filter(
+            (instance) =>
+              instance.dueDate.slice(0, 7) === month && instance.direction !== 'income' && instance.category !== 'floa_bank',
+          )
+          .map((instance) => ({
+            type: 'sg_charge' as const,
+            ruleId: instance.ruleId,
+            amount: instance.amount,
+            description: instance.description ?? instance.category,
+          })),
+        ...instances
+          .filter((instance) => instance.dueDate.slice(0, 7) === month && instance.category === 'floa_bank')
+          .map((instance) => ({
+            type: 'floa_repayment' as const,
+            ruleId: instance.ruleId,
+            amount: instance.amount,
+            description: instance.description ?? 'Remboursement Floa',
+          })),
+      ];
+      if (overdraftRemaining > 0) {
+        monthItems.push({
+          type: 'overdraft',
+          amount: overdraftRemaining,
+          description: 'Découvert reporté',
         });
       }
 
-      // Met à jour le découvert restant pour le mois suivant :
-      // Nouvel overdraft = ancien overdraft + charges - revenus (paiement en priorité sur le découvert)
-      // Cette formule équivaut à : payer le découvert jusqu'à hauteur du revenu, puis payer les charges avec le reste.
-      overdraftRemaining = this.roundCurrency(Math.max(overdraftRemaining + expenses - income, 0));
-
       monthSummaries.push({
         month,
-        expenses: this.roundCurrency(expenses),
+        expenses: this.roundCurrency(sgExpenses),
         income: this.roundCurrency(income),
-        carryover: carryoverAmount,
-        totalWithCarryover: this.roundCurrency(expenses + carryoverAmount),
-        overdraftRemaining,
+        // carryover reused to surface floa repayments until UI is updated.
+        carryover: this.roundCurrency(floaRepayments),
+        // Charges fixes SG uniquement + éventuel rattrapage découvert (sans les remboursements Floa).
+        totalWithCarryover: this.roundCurrency(sgExpenses + overdraftRemaining),
+        overdraftRemaining: nextOverdraft,
+        // Treasury-specific fields
+        sgChargesTotal: this.roundCurrency(sgExpenses),
+        floaRepaymentsTotal: this.roundCurrency(floaRepayments),
+        overdraftIncoming: this.roundCurrency(overdraftRemaining),
+        overdraftOutgoing: nextOverdraft,
+        salary: this.roundCurrency(income),
+        finalBalance: this.roundCurrency(solde),
+        items: monthItems,
       });
+
+      overdraftRemaining = nextOverdraft;
     }
 
-    return { instances: [...baseInstances, ...carryovers], monthSummaries };
+    return { instances, monthSummaries };
   }
 
   /**

@@ -13,6 +13,7 @@ export interface BudgetEntity {
   amount: number;
   remaining: number;
   isMaster: boolean;
+  autoSyncFromSalary: boolean;
   parentId: string | null;
   category: TransactionCategory | null;
   createdAt?: string;
@@ -28,6 +29,7 @@ export interface BudgetPayload {
   isMaster: boolean;
   parentId?: string | null;
   category?: TransactionCategory | null;
+  autoSyncFromSalary?: boolean;
 }
 
 /**

@@ -37,6 +37,14 @@ export const transactionInputSchema = z.object({
   description: z.string().trim().max(240).nullable().optional(),
   expenseDate: toIsoDate,
   rawTranscription: z.string().trim().nullable().optional(),
+  // Source de paiement (sg par défaut)
+  paymentSource: z.enum(['sg', 'floa']).default('sg'),
+  // Marqueur remboursement Floa
+  floaRepayment: z.boolean().default(false),
+  // Métadonnées libres
+  metadata: z.record(z.unknown()).default({}),
+  aiRaw: z.string().trim().nullable().optional(),
+  aiSource: z.string().trim().nullable().optional(),
 });
 
 export const transactionUpdateSchema = transactionInputSchema.partial().extend({
@@ -86,6 +94,8 @@ export const recurringRuleSchema = z.object({
     .nullable()
     .refine((value) => !value || !Number.isNaN(Date.parse(value)), { message: 'endDate must be a valid date' })
     .transform((value) => (value ? new Date(value).toISOString() : value)),
+  // Source de paiement par défaut pour la règle
+  paymentSource: z.enum(['sg', 'floa']).default('sg'),
 });
 
 /**

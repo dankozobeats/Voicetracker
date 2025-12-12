@@ -104,6 +104,12 @@ async function insertTransaction(
     metadata: {},
   };
 
+  const metadataCategory: TransactionCategory =
+    transactionPayload.type === 'income'
+      ? 'salaire'
+      : inferCategory(raw, parsed.description ?? parsed.merchant ?? null);
+  transactionPayload.metadata = { category: metadataCategory };
+
   // -------------------------------------------
   // Tente d'associer un budget (catégorie textuelle) pour déduire l'enveloppe.
   // -------------------------------------------
@@ -117,12 +123,9 @@ async function insertTransaction(
   } | null = null;
 
   try {
-    const category = inferCategory(raw, parsed.description ?? parsed.merchant ?? null);
-    transactionPayload.metadata = { category };
-
     if (transactionPayload.type === 'expense') {
       const budgets = await budgetLedger.listForUser(userId);
-      const matched = category ? budgetLedger.matchBudgetForCategory(category, budgets) : null;
+      const matched = metadataCategory ? budgetLedger.matchBudgetForCategory(metadataCategory, budgets) : null;
       if (matched) {
         transactionPayload.budget_id = matched.id;
       }
@@ -168,6 +171,10 @@ async function insertTransaction(
   if (error) {
     console.error('VOICE_API_ERROR supabase', error);
     return errorResponse('DB_INSERT_FAILED', 'Database insertion failed', 500, error, headers);
+  }
+
+  if (transactionPayload.type === 'income' && metadataCategory === 'salaire') {
+    await budgetLedger.syncMasterToSalary(userId);
   }
 
   return successResponse({ ...data, budgetAlert }, 201, headers);

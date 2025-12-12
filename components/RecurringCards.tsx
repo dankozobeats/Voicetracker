@@ -24,7 +24,18 @@ export default function RecurringCards({ rules, upcoming, total }: RecurringCard
           <div key={rule.id} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-slate-300">{rule.description || rule.category}</p>
-              <span className="text-xs uppercase text-slate-500">{rule.cadence}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs uppercase text-slate-500">{rule.cadence}</span>
+                <span
+                  className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                    rule.paymentSource === 'floa'
+                      ? 'bg-amber-500/20 text-amber-100'
+                      : 'bg-emerald-500/20 text-emerald-100'
+                  }`}
+                >
+                  {rule.paymentSource === 'floa' ? 'Floa différé' : 'SG'}
+                </span>
+              </div>
             </div>
             <div className="mt-3 text-2xl font-bold text-white">{rule.amount.toFixed(2)}€</div>
             <p className="text-xs text-slate-500">Début: {rule.startDate.slice(0, 10)}</p>
@@ -36,9 +47,26 @@ export default function RecurringCards({ rules, upcoming, total }: RecurringCard
         <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
           {upcoming.slice(0, 6).map((instance) => (
             <div key={`${instance.ruleId}-${instance.dueDate}`} className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
-              <p className="text-sm text-white">{instance.description || instance.category}</p>
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-white">{instance.description || instance.category}</p>
+                <span
+                  className={`rounded-full px-2 py-1 text-[11px] font-semibold ${
+                    instance.category === 'floa_bank'
+                      ? 'bg-amber-500/20 text-amber-100'
+                      : 'bg-emerald-500/20 text-emerald-100'
+                  }`}
+                >
+                  {instance.category === 'floa_bank' ? 'Remb. Floa' : 'SG'}
+                </span>
+              </div>
               <p className="text-xs text-slate-500">{instance.dueDate.slice(0, 10)}</p>
-              <p className="text-sm font-semibold text-indigo-200">{instance.amount.toFixed(2)}€</p>
+              <p
+                className={`text-sm font-semibold ${
+                  instance.category === 'floa_bank' ? 'text-amber-200' : 'text-indigo-200'
+                }`}
+              >
+                {instance.amount.toFixed(2)}€
+              </p>
             </div>
           ))}
         </div>

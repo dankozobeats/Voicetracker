@@ -19,6 +19,8 @@ export interface Transaction {
   id: string;
   userId: string;
   amount: number;
+  paymentSource: 'sg' | 'floa';
+  floaRepayment: boolean;
   metadata?: Record<string, unknown>;
   account?: string | null;
   settlementDate?: string | null;
@@ -35,6 +37,8 @@ export interface Transaction {
   createdAt?: string;
   updatedAt?: string;
   rawTranscription?: string | null;
+  aiRaw?: string | null;
+  aiSource?: string | null;
   deletedAt?: string | null;
 }
 
@@ -60,6 +64,11 @@ export interface TransactionInput {
   expenseDate: string;
   merchant?: string | null;
   rawTranscription?: string | null;
+  paymentSource?: 'sg' | 'floa';
+  floaRepayment?: boolean;
+  metadata?: Record<string, unknown>;
+  aiRaw?: string | null;
+  aiSource?: string | null;
 }
 
 /**
@@ -70,6 +79,11 @@ export interface TransactionUpdateInput {
   category?: TransactionCategory;
   description?: string | null;
   expenseDate?: string;
+  paymentSource?: 'sg' | 'floa';
+  floaRepayment?: boolean;
+  metadata?: Record<string, unknown>;
+  aiRaw?: string | null;
+  aiSource?: string | null;
 }
 
 /**

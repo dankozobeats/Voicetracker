@@ -14,6 +14,7 @@ interface AppShellProps {
 }
 
 const FULLSCREEN_ROUTES = ['/record'];
+const HIDE_SIDEMENU_ROUTES = ['/deferred'];
 
 /**
  * Global SaaS shell with sidebar, top bar, mobile drawer, and bottom nav.
@@ -23,8 +24,26 @@ const FULLSCREEN_ROUTES = ['/record'];
 export default function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarState, setSidebarState] = useState<'auto' | 'hidden' | 'visible'>('auto');
 
   const isFullScreen = useMemo(() => FULLSCREEN_ROUTES.some((route) => pathname.startsWith(route)), [pathname]);
+  const routeForcesHide = useMemo(
+    () => HIDE_SIDEMENU_ROUTES.some((route) => pathname.startsWith(route)),
+    [pathname],
+  );
+  const hideSideMenu = useMemo(() => {
+    if (sidebarState === 'hidden') return true;
+    if (sidebarState === 'visible') return false;
+    return routeForcesHide;
+  }, [sidebarState, routeForcesHide]);
+
+  const handleToggleSidebar = () => {
+    setSidebarState((prev) => {
+      if (prev === 'hidden') return 'visible';
+      if (prev === 'visible') return 'hidden';
+      return routeForcesHide ? 'visible' : 'hidden';
+    });
+  };
 
   if (isFullScreen) {
     return <>{children}</>;
@@ -33,9 +52,14 @@ export default function AppShell({ children }: AppShellProps) {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 transition-colors dark:bg-slate-950 dark:text-slate-50">
       <div className="flex min-h-screen">
-        <SideMenu />
+        {hideSideMenu ? null : <SideMenu />}
         <div className="flex flex-1 flex-col lg:pl-0">
-          <TopBar pathname={pathname} onMenuClick={() => setDrawerOpen(true)} />
+          <TopBar
+            pathname={pathname}
+            onMenuClick={() => setDrawerOpen(true)}
+            onToggleSidebar={handleToggleSidebar}
+            sidebarHidden={hideSideMenu}
+          />
           <main className="flex-1 px-4 pb-20 pt-4 md:px-6 md:pb-10 lg:px-8">{children}</main>
         </div>
       </div>

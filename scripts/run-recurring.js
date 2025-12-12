@@ -99,8 +99,10 @@ const main = async () => {
   const { data: rules, error: ruleError } = await supabase
     .from('recurring_rules')
     .select(
-      'id, user_id, amount, category, description, direction, cadence, day_of_month, weekday, start_date, end_date',
-    );
+      // Include payment_source to handle Floa deferral logic.
+      'id, user_id, amount, category, description, direction, cadence, payment_source, day_of_month, weekday, start_date, end_date, active',
+    )
+    .eq('active', true);
   if (ruleError) {
     console.error('[recurring] Failed to fetch rules', ruleError);
     process.exit(1);
@@ -157,6 +159,75 @@ const main = async () => {
         period: targetMonth,
       };
 
+      const budgetKey = `${rule.user_id}::${rule.category}`;
+      const budgetId =
+        budgetByCategory.get(budgetKey) ??
+        budgetByName.get(`${rule.user_id}::${DEFAULT_BUDGET_NAME.toLowerCase()}`) ??
+        null;
+
+      // Branch by payment source: SG = current month, Floa = deferred repayment next month.
+      const paymentSource = rule.payment_source || 'sg';
+
+      if (paymentSource === 'floa' && rule.direction !== 'income') {
+        // Floa: skip current charge, create repayment next month.
+        const repaymentDate = (() => {
+          const dateObj = new Date(dueDate);
+          const anchor = new Date(Date.UTC(dateObj.getUTCFullYear(), dateObj.getUTCMonth() + 1, 1, 12, 0, 0, 0));
+          return anchor.toISOString();
+        })();
+        const repaymentPeriod = repaymentDate.slice(0, 7);
+        const repaymentMetadata = { ...metadata, floa_repayment: true, period: targetMonth };
+
+        // Idempotency: skip if repayment already exists for this rule+period.
+        const { data: existingRepayment, error: existsRepaymentError } = await supabase
+          .from('transactions')
+          .select('id')
+          .eq('user_id', rule.user_id)
+          .eq('date', repaymentDate)
+          .eq('floa_repayment', true)
+          .contains('metadata', { recurringRuleId: rule.id, period: targetMonth })
+          .limit(1);
+
+        if (existsRepaymentError) {
+          console.warn('[recurring] Skip Floa repayment due to lookup error', rule.id, existsRepaymentError);
+          continue;
+        }
+        if (existingRepayment && existingRepayment.length) {
+          console.log(`[recurring] Floa repayment already generated for rule ${rule.id} period ${targetMonth}`);
+          continue;
+        }
+
+        const repaymentPayload = {
+          user_id: rule.user_id,
+          amount: Number(rule.amount),
+          type: 'expense',
+          account: null,
+          settlement_date: null,
+          category_id: null,
+          description: rule.description ? `Remboursement Floa – ${rule.description}` : 'Remboursement Floa',
+          merchant: null,
+          date: repaymentDate,
+          ai_raw: 'recurring_job',
+          metadata: repaymentMetadata,
+          budget_id: budgetId,
+          payment_source: 'sg',
+          floa_repayment: true,
+        };
+
+        const { error: repaymentInsertError } = await supabase.from('transactions').insert(repaymentPayload);
+        if (repaymentInsertError) {
+          console.error('[recurring] Insert Floa repayment failed for rule', rule.id, repaymentInsertError);
+        } else {
+          insertedCount += 1;
+          console.log(
+            `[recurring] Inserted Floa repayment for rule ${rule.id} date ${repaymentDate} budget ${budgetId ?? 'none'}`,
+          );
+        }
+
+        continue; // Skip SG insertion for Floa rules.
+      }
+
+      // SG path (default)
       // Idempotence : saute si déjà généré pour cette règle+période.
       const { data: existing, error: existsError } = await supabase
         .from('transactions')
@@ -175,12 +246,6 @@ const main = async () => {
         continue;
       }
 
-      const budgetKey = `${rule.user_id}::${rule.category}`;
-      const budgetId =
-        budgetByCategory.get(budgetKey) ??
-        budgetByName.get(`${rule.user_id}::${DEFAULT_BUDGET_NAME.toLowerCase()}`) ??
-        null;
-
       const payload = {
         user_id: rule.user_id,
         amount: Number(rule.amount),
@@ -194,6 +259,8 @@ const main = async () => {
         ai_raw: 'recurring_job',
         metadata,
         budget_id: budgetId,
+        payment_source: paymentSource,
+        floa_repayment: false,
       };
 
       const { error: insertError } = await supabase.from('transactions').insert(payload);

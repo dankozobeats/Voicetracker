@@ -19,12 +19,13 @@ const TABLE_NAME = 'transactions';
 // -------------------------------------------
 const SELECT_FIELDS =
   // Joins Supabase : on cible explicitement la FK category_id pour éviter les erreurs de relation
-  'id, amount, account, settlement_date, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, deleted_at, type, metadata, budget_id, category:categories!category_id(id, name, icon, color)';
+  'id, amount, account, settlement_date, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, ai_source, raw_transcription, deleted_at, type, metadata, budget_id, payment_source, floa_repayment, category:categories!category_id(id, name, icon, color)';
 // -------------------------------------------
 // Sélection sans join, utilisée en fallback si la relation n'est pas disponible
+// (restreinte aux colonnes sûres pour fonctionner même si les migrations récentes ne sont pas appliquées).
 // -------------------------------------------
 const BASIC_FIELDS =
-  'id, amount, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, deleted_at, type, metadata, budget_id';
+  'id, amount, account, settlement_date, category_id, description, merchant, date, created_at, updated_at, user_id, ai_raw, deleted_at, type, metadata, budget_id, payment_source, floa_repayment';
 const DEFAULT_CATEGORY: TransactionCategory = 'autre';
 const DEFAULT_TYPE: Transaction['type'] = 'expense';
 
@@ -47,6 +48,8 @@ export class TransactionService {
       id: String(row.id),
       userId: String(row.user_id),
       amount: Number(row.amount),
+      paymentSource: (row.payment_source as Transaction['paymentSource']) ?? 'sg',
+      floaRepayment: Boolean(row.floa_repayment),
       metadata: (row.metadata as Record<string, unknown> | null | undefined) ?? undefined,
       account: (row.account as string | null | undefined) ?? null,
       settlementDate: (row.settlement_date as string | null | undefined) ?? null,
@@ -68,10 +71,133 @@ export class TransactionService {
       expenseDate: date,
       createdAt: row.created_at as string | undefined,
       updatedAt: row.updated_at as string | undefined,
-      rawTranscription: (row.ai_raw as string | null | undefined) ?? (row.raw_transcription as string | null | undefined) ?? null,
+      rawTranscription:
+        (row.raw_transcription as string | null | undefined) ??
+        (row.ai_raw as string | null | undefined) ??
+        null,
+      aiRaw: (row.ai_raw as string | null | undefined) ?? null,
+      aiSource: (row.ai_source as string | null | undefined) ?? null,
       deletedAt: (row.deleted_at as string | null | undefined) ?? null,
       type: (row.type as Transaction['type']) ?? DEFAULT_TYPE,
     };
+  }
+
+  /**
+   * Détermine si une transaction correspond à un salaire (type income + catégorie/description salaire).
+   */
+  private isSalaryIncome(
+    type: Transaction['type'] | undefined,
+    category?: string | null,
+    description?: string | null,
+  ): boolean {
+    if (type !== 'income') return false;
+    const haystack = `${category ?? ''} ${description ?? ''}`.toLowerCase();
+    return haystack.includes('salaire');
+  }
+
+  /**
+   * Build first day of next month at noon UTC to anchor repayment dates.
+   */
+  private nextMonthAnchor(dateIso: string): string {
+    const date = new Date(dateIso);
+    if (Number.isNaN(date.getTime())) return new Date().toISOString();
+    const utc = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1, 12, 0, 0, 0);
+    return new Date(utc).toISOString();
+  }
+
+  /**
+   * Upsert a Floa repayment matching an original transaction for idempotency.
+   * Idempotency key: user_id + floa_repayment_of + period (YYYY-MM) + floa_repayment flag.
+   */
+  private async ensureFloaRepayment(
+    original: Transaction,
+    userId: string,
+    amount: number,
+    description?: string | null,
+  ): Promise<void> {
+    const repaymentDate = this.nextMonthAnchor(original.date);
+    const period = repaymentDate.slice(0, 7);
+    const metadata = {
+      ...((original.metadata as Record<string, unknown> | undefined) ?? {}),
+      floa_repayment: true,
+      floa_repayment_of: original.id,
+      period,
+    };
+
+    // Clean up stale repayments tied to the same original but a different period.
+    const { error: cleanupError } = await this.client
+      .from(TABLE_NAME)
+      .delete()
+      .eq('user_id', userId)
+      .eq('floa_repayment', true)
+      .contains('metadata', { floa_repayment_of: original.id })
+      .not('metadata->>period', 'eq', period);
+    if (cleanupError) {
+      console.warn('[transactions] Floa repayment cleanup failed', cleanupError);
+    }
+
+    // Check existing repayment to avoid duplicates and to update amount/date if needed.
+    const { data: existing, error: lookupError } = await this.client
+      .from(TABLE_NAME)
+      .select('id')
+      .eq('user_id', userId)
+      .eq('floa_repayment', true)
+      .contains('metadata', { floa_repayment_of: original.id, period })
+      .maybeSingle();
+
+    if (lookupError) {
+      console.warn('[transactions] Floa repayment lookup failed', lookupError);
+      return;
+    }
+
+    const payload = {
+      user_id: userId,
+      amount,
+      type: 'expense' as const,
+      account: null,
+      settlement_date: null,
+      category_id: null,
+      description: description ? `Remboursement Floa – ${description}` : 'Remboursement Floa',
+      merchant: null,
+      date: repaymentDate,
+      ai_raw: original.aiRaw ?? null,
+      ai_source: original.aiSource ?? null,
+      raw_transcription: original.rawTranscription ?? null,
+      recurring_id: null,
+      metadata,
+      budget_id: null,
+      payment_source: 'sg' as const,
+      floa_repayment: true,
+    };
+
+    if (existing?.id) {
+      const { error: updateError } = await this.client.from(TABLE_NAME).update(payload).eq('id', existing.id);
+      if (updateError) {
+        console.warn('[transactions] Floa repayment update failed', updateError);
+      }
+      return;
+    }
+
+    const { error: insertError } = await this.client.from(TABLE_NAME).insert(payload);
+    if (insertError) {
+      console.warn('[transactions] Floa repayment insert failed', insertError);
+    }
+  }
+
+  /**
+   * Delete an existing Floa repayment tied to an original transaction (idempotent).
+   */
+  private async deleteFloaRepayment(originalId: string, userId: string): Promise<void> {
+    const { error } = await this.client
+      .from(TABLE_NAME)
+      .delete()
+      .eq('user_id', userId)
+      .eq('floa_repayment', true)
+      .contains('metadata', { floa_repayment_of: originalId });
+
+    if (error) {
+      console.warn('[transactions] Failed to delete Floa repayment', error);
+    }
   }
 
   /**
@@ -102,10 +228,9 @@ export class TransactionService {
     // -------------------------------------------
     if (error) {
       console.warn('[transactions] Join categories failed, falling back to basic select', error);
-      const fallbackQuery = applyUserFilter(this.client.from(TABLE_NAME).select(BASIC_FIELDS), scopedUserId).order(
-        'date',
-        { ascending: false },
-      );
+      const fallbackQuery = applyUserFilter(this.client.from(TABLE_NAME).select(BASIC_FIELDS), scopedUserId)
+        .is('deleted_at', null)
+        .order('date', { ascending: false });
       const { data: basicData, error: basicError }: PostgrestResponse<Record<string, unknown>> = await fallbackQuery;
       if (basicError) {
         console.warn('[transactions] Basic select failed, returning empty list', basicError);
@@ -115,20 +240,6 @@ export class TransactionService {
     }
 
     const mapped = (data ?? []).map((row) => this.mapRow(row));
-
-    // -------------------------------------------
-    // En développement : si aucun résultat, on tente un fallback sans filtre user pour retrouver d'anciennes données
-    // (utile quand l'ID utilisateur a changé). Ne s'exécute pas en production.
-    // -------------------------------------------
-    if (mapped.length === 0 && process.env.NODE_ENV === 'development') {
-      const { data: unscopedData, error: unscopedError }: PostgrestResponse<Record<string, unknown>> = await this.client
-        .from(TABLE_NAME)
-        .select(BASIC_FIELDS)
-        .order('date', { ascending: false });
-      if (!unscopedError && unscopedData) {
-        return unscopedData.map((row) => this.mapRow(row));
-      }
-    }
 
     return mapped;
   }
@@ -150,6 +261,9 @@ export class TransactionService {
       budgetId = matchedBudget?.id ?? null;
     }
 
+    const paymentSource = parsed.paymentSource ?? 'sg';
+    const floaRepayment = parsed.floaRepayment ?? false;
+
     const { data, error }: PostgrestSingleResponse<Record<string, unknown>[]> = await this.client
       .from(TABLE_NAME)
       .insert({
@@ -162,10 +276,14 @@ export class TransactionService {
         description: parsed.description,
         merchant: null,
         date: parsed.expenseDate,
-        ai_raw: parsed.rawTranscription,
+        ai_raw: parsed.aiRaw ?? parsed.rawTranscription,
+        ai_source: parsed.aiSource ?? null,
+        raw_transcription: parsed.rawTranscription ?? null,
         budget_id: budgetId,
         // Persist human-readable category in metadata because DB column is a UUID.
-        metadata: { category: parsed.category },
+        metadata: { ...(parsed.metadata ?? {}), category: parsed.category },
+        payment_source: paymentSource,
+        floa_repayment: floaRepayment,
       })
       .select(SELECT_FIELDS)
       .single();
@@ -174,7 +292,18 @@ export class TransactionService {
       handleServiceError('[transactions] Failed to create transaction', error);
     }
 
-    return this.mapRow(data);
+    const created = this.mapRow(data);
+
+    // If purchase is on Floa, ensure repayment is scheduled next month.
+    if (type === 'expense' && paymentSource === 'floa' && !created.floaRepayment) {
+      await this.ensureFloaRepayment(created, userId, created.amount, created.description);
+    }
+
+    if (this.isSalaryIncome(type, parsed.category, parsed.description)) {
+      await this.budgetLedger.syncMasterToSalary(userId);
+    }
+
+    return created;
   }
 
   /**
@@ -197,28 +326,49 @@ export class TransactionService {
       merchant: null,
       date: parsed.expenseDate,
       updated_at: new Date().toISOString(),
+      ai_raw: parsed.aiRaw,
+      ai_source: parsed.aiSource,
     };
+
+    if (parsed.paymentSource) {
+      updatePayload.payment_source = parsed.paymentSource;
+    }
+    if (typeof parsed.floaRepayment === 'boolean') {
+      updatePayload.floa_repayment = parsed.floaRepayment;
+    }
 
     if (parsed.type) {
       updatePayload.type = parsed.type;
     }
     if (parsed.category) {
       updatePayload.metadata = { category: parsed.category };
+    } else if (parsed.metadata) {
+      updatePayload.metadata = parsed.metadata;
     }
 
-    let existingType: Transaction['type'] | undefined;
-    if (!parsed.type && parsed.category) {
-      const { data: existingRow, error: existingError } = await this.client
+    let existingRow: Record<string, unknown> | null = null;
+    if (!parsed.type || parsed.category || parsed.paymentSource || parsed.amount || parsed.expenseDate) {
+      const { data: fetched, error: existingError } = await this.client
         .from(TABLE_NAME)
-        .select('type')
+        .select(
+          'type, payment_source, floa_repayment, amount, date, description, metadata, ai_raw, ai_source, raw_transcription, budget_id',
+        )
         .eq('id', id)
         .eq('user_id', scopedUserId)
         .maybeSingle();
       if (existingError) {
         handleServiceError('[transactions] Failed to fetch transaction for budget reassignment', existingError);
       }
-      existingType = (existingRow?.type as Transaction['type'] | undefined) ?? undefined;
+      existingRow = fetched ?? null;
     }
+
+    const existingType = (existingRow?.type as Transaction['type'] | undefined) ?? undefined;
+    const existingPaymentSource = (existingRow?.payment_source as Transaction['paymentSource'] | undefined) ?? 'sg';
+    const existingAmount = Number(existingRow?.amount ?? parsed.amount ?? 0);
+    const existingDate = (existingRow?.date as string | undefined) ?? parsed.expenseDate;
+    const existingDescription = (existingRow?.description as string | null | undefined) ?? null;
+    const existingMetadataCategory =
+      (existingRow?.metadata as Record<string, unknown> | null | undefined)?.category as string | undefined;
 
     const targetType = parsed.type ?? existingType ?? DEFAULT_TYPE;
     if (targetType !== 'expense') {
@@ -237,11 +387,59 @@ export class TransactionService {
       .select(SELECT_FIELDS)
       .single();
 
+    let mapped: Transaction | null = null;
+
     if (error || !data) {
-      handleServiceError('[transactions] Failed to update transaction', error);
+      // Fallback sans join si la relation catégories est absente.
+      const { data: basicData, error: basicError }: PostgrestSingleResponse<Record<string, unknown>> = await this.client
+        .from(TABLE_NAME)
+        .select(BASIC_FIELDS)
+        .eq('id', id)
+        .eq('user_id', scopedUserId)
+        .single();
+      if (basicError || !basicData) {
+        handleServiceError('[transactions] Failed to update transaction', error ?? basicError);
+      }
+      mapped = this.mapRow(basicData as Record<string, unknown>);
+    } else {
+      mapped = this.mapRow(data as Record<string, unknown>);
     }
 
-    return this.mapRow(data);
+    const updated = mapped;
+
+    // Handle Floa repayment lifecycle when payment source changes (skip if this row is already a repayment).
+    const newPaymentSource = parsed.paymentSource ?? existingPaymentSource;
+    const wasFloa = existingPaymentSource === 'floa';
+    const isFloa = newPaymentSource === 'floa';
+
+    if (!updated.floaRepayment && targetType === 'expense') {
+      if (!wasFloa && isFloa) {
+        await this.ensureFloaRepayment(updated, scopedUserId, updated.amount, updated.description);
+      } else if (wasFloa && !isFloa) {
+        await this.deleteFloaRepayment(id, scopedUserId);
+      } else if (isFloa) {
+        // If still Floa but amount/date/description changed, refresh repayment idempotently.
+        const effectiveAmount = parsed.amount ?? existingAmount;
+        const effectiveDescription = parsed.description ?? existingDescription ?? undefined;
+        const effectiveDate = parsed.expenseDate ?? existingDate ?? updated.date;
+        const refreshed: Transaction = {
+          ...updated,
+          amount: effectiveAmount,
+          description: effectiveDescription ?? null,
+          date: effectiveDate,
+        };
+        await this.ensureFloaRepayment(refreshed, scopedUserId, effectiveAmount, effectiveDescription);
+      }
+    }
+
+    const impactsSalary =
+      this.isSalaryIncome(existingType, existingMetadataCategory, existingDescription) ||
+      this.isSalaryIncome(updated.type, updated.category, updated.description);
+    if (impactsSalary) {
+      await this.budgetLedger.syncMasterToSalary(scopedUserId);
+    }
+
+    return updated;
   }
 
   /**
@@ -251,6 +449,20 @@ export class TransactionService {
    */
   async softDelete(id: string, userId?: string): Promise<void> {
     const scopedUserId = resolveUserId(userId, { required: true });
+    const { data: row } = await this.client
+      .from(TABLE_NAME)
+      .select('type, metadata, description')
+      .eq('id', id)
+      .eq('user_id', scopedUserId)
+      .maybeSingle();
+    const shouldSync =
+      row &&
+      this.isSalaryIncome(
+        (row.type as Transaction['type'] | undefined) ?? undefined,
+        ((row.metadata as Record<string, unknown> | null | undefined) ?? undefined)?.category as string | undefined,
+        (row.description as string | null | undefined) ?? null,
+      );
+
     const { error } = await this.client
       .from(TABLE_NAME)
       .update({ deleted_at: new Date().toISOString() })
@@ -259,6 +471,10 @@ export class TransactionService {
 
     if (error) {
       handleServiceError('[transactions] Failed to soft delete transaction', error);
+    }
+
+    if (shouldSync) {
+      await this.budgetLedger.syncMasterToSalary(scopedUserId);
     }
   }
 
@@ -270,6 +486,21 @@ export class TransactionService {
   async softDeleteMany(ids: string[], userId?: string): Promise<void> {
     if (!ids.length) return;
     const scopedUserId = resolveUserId(userId, { required: true });
+    const { data: rows } = await this.client
+      .from(TABLE_NAME)
+      .select('type, metadata, description')
+      .in('id', ids)
+      .eq('user_id', scopedUserId);
+
+    const shouldSync =
+      rows?.some((row) =>
+        this.isSalaryIncome(
+          (row.type as Transaction['type'] | undefined) ?? undefined,
+          ((row.metadata as Record<string, unknown> | null | undefined) ?? undefined)?.category as string | undefined,
+          (row.description as string | null | undefined) ?? null,
+        ),
+      ) ?? false;
+
     const { error } = await this.client
       .from(TABLE_NAME)
       .update({ deleted_at: new Date().toISOString() })
@@ -278,6 +509,22 @@ export class TransactionService {
 
     if (error) {
       handleServiceError('[transactions] Failed to soft delete transactions', error);
+    }
+
+    if (shouldSync) {
+      await this.budgetLedger.syncMasterToSalary(scopedUserId);
+    }
+  }
+
+  /**
+   * Hard delete all transactions for a user (maintenance/cleanup only).
+   * @param userId - optional user scope
+   */
+  async deleteAll(userId?: string): Promise<void> {
+    const scopedUserId = resolveUserId(userId, { required: true });
+    const { error } = await this.client.from(TABLE_NAME).delete().eq('user_id', scopedUserId);
+    if (error) {
+      handleServiceError('[transactions] Failed to delete all transactions', error);
     }
   }
 
@@ -307,9 +554,13 @@ export class TransactionService {
       if (kind === 'income') {
         existing.incomeTotal += tx.amount;
       } else if (kind !== 'transfer') {
-        existing.expenseTotal += tx.amount;
-        const currentCategoryTotal = existing.categoryTotals[tx.category] ?? 0;
-        existing.categoryTotals[tx.category] = currentCategoryTotal + tx.amount;
+        // Floa purchases should not impact current month; repayments do.
+        const isDeferredPurchase = tx.paymentSource === 'floa' && !tx.floaRepayment;
+        if (!isDeferredPurchase) {
+          existing.expenseTotal += tx.amount;
+          const currentCategoryTotal = existing.categoryTotals[tx.category] ?? 0;
+          existing.categoryTotals[tx.category] = currentCategoryTotal + tx.amount;
+        }
       }
 
       existing.total = existing.expenseTotal;

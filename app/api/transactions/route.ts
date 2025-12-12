@@ -14,17 +14,30 @@ const json = (body: unknown, status = 200) => NextResponse.json(body, { status }
  * List transactions or monthly summaries.
  * Accepts optional query params: category, startDate, endDate, summary=monthly.
  */
+
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const supabase = createRouteHandlerClient({ cookies });
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+
+    // 1️⃣ Toujours garantir un userId — même si pas de session
+    const userId =
+      session?.user?.id ||
+      process.env.SUPABASE_DEFAULT_USER_ID ||
+      (() => {
+        console.warn("[API] No userId found, default fallback missing");
+        return null;
+      })();
+
+    if (!userId) {
+      return json({ transactions: [], error: "NO_USER_ID" }, 400);
+    }
 
     const params = request.nextUrl.searchParams;
     const filters: TransactionFilters = {
-      category: (params.get('category') as TransactionFilters['category']) ?? undefined,
+      category: params.get('category') ?? undefined,
       startDate: params.get('startDate') ?? undefined,
       endDate: params.get('endDate') ?? undefined,
     };
@@ -33,15 +46,15 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     if (params.get('summary') === 'monthly') {
       const monthlyTotals = await transactionService.computeMonthlyTotals(userId);
-      return json({ transactions, monthlyTotals });
+      return json({ transactions, monthlyTotals, userId });
     }
 
-    return json({ transactions });
+    return json({ transactions, userId });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to list transactions';
-    return json({ error: message }, 400);
+    return json({ error: error instanceof Error ? error.message : 'Unable to list transactions' }, 400);
   }
 }
+
 
 /**
  * Create a transaction via non-vocal flow.
@@ -52,7 +65,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+    const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
 
     const payload = await request.json();
     const transaction = await transactionService.create({ ...payload, userId });
@@ -72,7 +85,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+    const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
 
     const params = request.nextUrl.searchParams;
     const id = params.get('id');
@@ -95,14 +108,31 @@ export async function DELETE(request: NextRequest): Promise<NextResponse> {
     const {
       data: { session },
     } = await supabase.auth.getSession();
-    const userId = session?.user?.id;
+    const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
+
+    const params = request.nextUrl.searchParams;
+    if (params.get('all') === 'true') {
+      await transactionService.deleteAll(userId);
+      return json({ success: true });
+    }
 
     let ids: string[] = [];
 
-    // Support legacy ?id=... and bulk via JSON body { ids: [...] }
-    const idParam = request.nextUrl.searchParams.get('id');
+    // Support ?id=..., ?ids=[...] and bulk via JSON body { ids: [...] }
+    const idParam = params.get('id');
+    const idsParam = params.get('ids');
     if (idParam) {
       ids = [idParam];
+    } else if (idsParam) {
+      try {
+        const parsed = JSON.parse(idsParam);
+        if (Array.isArray(parsed)) {
+          ids = parsed.map((val) => String(val)).filter(Boolean);
+        }
+      } catch (err) {
+        console.error('[transactions] Failed to parse ids param', err);
+        return json({ error: 'ids must be a JSON array' }, 400);
+      }
     } else {
       const contentType = request.headers.get('content-type') ?? '';
       if (contentType.toLowerCase().includes('application/json')) {

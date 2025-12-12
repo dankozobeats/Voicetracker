@@ -16,9 +16,10 @@ import { toast } from '@/components/ui/use-toast';
 const transactionSchema = z.object({
   amount: z.number().positive(),
   type: z.enum(['income', 'expense', 'transfer']),
-  category_id: z.string().uuid(),
+  category_id: z.string().uuid().optional(),
   description: z.string().max(240).optional(),
   date: z.string().min(1),
+  payment_source: z.enum(['sg', 'floa']).optional(),
 });
 
 // -------------------------------------------
@@ -44,6 +45,7 @@ export default function NewTransactionPage() {
     category_id: '',
     description: '',
     date: new Date().toISOString().slice(0, 10),
+    payment_source: 'sg',
   });
 
   // -------------------------------------------
@@ -95,9 +97,10 @@ export default function NewTransactionPage() {
     const parsed = transactionSchema.safeParse({
       amount: Number(form.amount),
       type: form.type,
-      category_id: form.category_id,
+      category_id: form.category_id || undefined,
       description: form.description || undefined,
       date: form.date,
+      payment_source: form.payment_source,
     });
 
     if (!parsed.success) {
@@ -110,15 +113,32 @@ export default function NewTransactionPage() {
       return;
     }
 
+    // Récupère l'utilisateur courant pour satisfaire la RLS (user_id obligatoire).
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    const userId = user?.id;
+    if (!userId) {
+      toast({
+        title: 'Session requise',
+        description: 'Reconnecte-toi pour créer une transaction.',
+        variant: 'destructive',
+      });
+      setLoading(false);
+      return;
+    }
+
     // -------------------------------------------
     // Insert Supabase : profite du RLS et enregistre la transaction
     // -------------------------------------------
     const { error } = await supabase.from('transactions').insert({
+      user_id: userId,
       amount: parsed.data.amount,
       type: parsed.data.type,
-      category_id: parsed.data.category_id,
+      category_id: parsed.data.category_id ?? null,
       description: parsed.data.description ?? null,
       date: parsed.data.date,
+      payment_source: parsed.data.payment_source ?? 'sg',
     });
 
     if (error) {
@@ -182,11 +202,10 @@ export default function NewTransactionPage() {
             Catégorie
             <select
               className="rounded border border-slate-700 bg-slate-800 px-3 py-2 text-white"
-              required
               value={form.category_id}
               onChange={(e) => setForm((prev) => ({ ...prev, category_id: e.target.value }))}
             >
-              <option value="">Sélectionner…</option>
+              <option value="">(Optionnel) Sélectionner…</option>
               {categories.map((cat) => (
                 <option key={cat.id} value={cat.id}>
                   {cat.icon ?? '•'} {cat.name}
@@ -194,6 +213,33 @@ export default function NewTransactionPage() {
               ))}
             </select>
           </label>
+          <div className="flex flex-col gap-1 text-sm text-slate-200 md:col-span-2">
+            Source de paiement
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={`flex-1 rounded border px-3 py-2 text-sm ${
+                  form.payment_source === 'sg'
+                    ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-100'
+                    : 'border-slate-700 bg-slate-800 text-slate-200'
+                }`}
+                onClick={() => setForm((prev) => ({ ...prev, payment_source: 'sg' }))}
+              >
+                SG (immédiat)
+              </button>
+              <button
+                type="button"
+                className={`flex-1 rounded border px-3 py-2 text-sm ${
+                  form.payment_source === 'floa'
+                    ? 'border-amber-500/60 bg-amber-500/15 text-amber-100'
+                    : 'border-slate-700 bg-slate-800 text-slate-200'
+                }`}
+                onClick={() => setForm((prev) => ({ ...prev, payment_source: 'floa' }))}
+              >
+                Floa (différé)
+              </button>
+            </div>
+          </div>
           <label className="flex flex-col gap-1 text-sm text-slate-200 md:col-span-2">
             Description
             <input

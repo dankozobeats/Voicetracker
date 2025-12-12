@@ -1,6 +1,7 @@
 import { z, type ZodSchema } from 'zod';
 
-export const categories = ['restaurant', 'courses', 'transport', 'loisirs', 'santé', 'shopping', 'autre'] as const;
+// Ajout de la catégorie floa_bank pour tracer les remboursements différés.
+export const categories = ['salaire', 'restaurant', 'courses', 'transport', 'loisirs', 'santé', 'shopping', 'autre', 'floa_bank'] as const;
 
 const trimString = (value: unknown): unknown => {
   if (typeof value !== 'string') return value;
@@ -31,6 +32,7 @@ const isoDateString = z
   .string()
   .refine((val) => !Number.isNaN(Date.parse(val)), { message: 'expense_date must be a valid ISO date string' })
   .transform((val) => new Date(val).toISOString());
+const isoDateStringOptional = isoDateString.optional();
 
 export const groqExpenseSchema = z.object({
   amount: z.preprocess(
@@ -72,6 +74,15 @@ export const transactionInsertSchema = z.object({
   merchant: z.string().nullable().optional(),
   raw_transcription: z.string(),
   ai_confidence: z.number().min(0).max(1).nullable().optional(),
+  // Source de paiement (sg par défaut)
+  payment_source: z.enum(['sg', 'floa']).default('sg'),
+  // Marqueur de remboursement Floa
+  floa_repayment: z.boolean().default(false),
+  // Métadonnées libres
+  metadata: z.record(z.unknown()).default({}),
+  // Traces IA facultatives
+  ai_raw: z.string().optional(),
+  ai_source: z.string().optional(),
 });
 
 export const transactionParsedLLMSchema = z.object({
@@ -79,14 +90,12 @@ export const transactionParsedLLMSchema = z.object({
   amount: z.preprocess(numberFromString, z.number().positive()),
   date: z.preprocess(
     (val) => {
+      if (val === null || val === undefined) return undefined;
       if (val instanceof Date) return val.toISOString();
       if (typeof val === 'string') return val.trim();
       return val;
     },
-    z
-      .string()
-      .refine((val) => !Number.isNaN(Date.parse(val)), { message: 'date must be a valid ISO date string' })
-      .transform((val) => new Date(val).toISOString()),
+    isoDateStringOptional,
   ),
   description: z.preprocess(optionalString, z.string().max(240).nullable().optional()),
   category_id: z.preprocess(nullableString, z.string().uuid().nullable().optional()),
@@ -95,6 +104,16 @@ export const transactionParsedLLMSchema = z.object({
     (val) => (val === null || val === undefined ? null : numberFromString(val)),
     z.number().min(0).max(1).nullable().optional(),
   ),
+  // Source de paiement détectée ou par défaut
+  payment_source: z.enum(['sg', 'floa']).default('sg'),
+  // Flag pour marquer un remboursement Floa
+  floa_repayment: z.boolean().default(false),
+  // Métadonnées libres
+  metadata: z.record(z.unknown()).default({}),
+  // Traces IA facultatives
+  ai_raw: z.string().optional(),
+  ai_source: z.string().optional(),
+  raw_transcription: z.string().optional(),
 });
 
 export const transactionRecordSchema = transactionInsertSchema
@@ -102,12 +121,14 @@ export const transactionRecordSchema = transactionInsertSchema
     raw_transcription: z.string().optional(),
     id: z.string().uuid().optional(),
     date: z.string(),
-    ai_raw: z.string(),
-    ai_source: z.literal('voice'),
+    ai_raw: z.string().optional(),
+    ai_source: z.string().optional(),
     recurring_id: z.string().uuid().nullable().optional(),
     metadata: z.record(z.unknown()),
     created_at: z.string().optional(),
     updated_at: z.string().optional(),
+    payment_source: z.enum(['sg', 'floa']).default('sg'),
+    floa_repayment: z.boolean().default(false),
   })
   .passthrough();
 

@@ -27,6 +27,7 @@ export default function BudgetForm({ budgets }: BudgetFormProps) {
     isMaster: !master, // si aucun master existant, on propose d'abord de créer le principal
     category: '',
     parentId: master?.id ?? '',
+    autoSyncFromSalary: true,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +53,7 @@ export default function BudgetForm({ budgets }: BudgetFormProps) {
         isMaster: form.isMaster,
         parentId: form.isMaster ? null : form.parentId || null,
         category: form.isMaster ? null : form.category || null,
+        autoSyncFromSalary: form.isMaster ? form.autoSyncFromSalary : false,
       }),
     });
     const payload = await res.json().catch(() => ({}));
@@ -66,6 +68,7 @@ export default function BudgetForm({ budgets }: BudgetFormProps) {
       isMaster: false,
       category: '',
       parentId: master?.id ?? '',
+      autoSyncFromSalary: true,
     });
     router.refresh();
   };
@@ -84,7 +87,13 @@ export default function BudgetForm({ budgets }: BudgetFormProps) {
             type="checkbox"
             className="h-4 w-4 accent-indigo-500"
             checked={form.isMaster}
-            onChange={(e) => setForm((prev) => ({ ...prev, isMaster: e.target.checked }))}
+            onChange={(e) =>
+              setForm((prev) => ({
+                ...prev,
+                isMaster: e.target.checked,
+                autoSyncFromSalary: e.target.checked ? prev.autoSyncFromSalary : false,
+              }))
+            }
             disabled={!!master}
           />
           Budget principal ?
@@ -149,7 +158,22 @@ export default function BudgetForm({ budgets }: BudgetFormProps) {
               </select>
             </label>
           </>
-        ) : null}
+        ) : (
+          <label className="flex flex-col gap-1 text-sm text-slate-300 md:col-span-2">
+            Synchronisation salaire
+            <div className="flex items-center gap-2 rounded border border-slate-700 bg-slate-800 px-3 py-2">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-indigo-500"
+                checked={form.autoSyncFromSalary}
+                onChange={(e) => setForm((prev) => ({ ...prev, autoSyncFromSalary: e.target.checked }))}
+              />
+              <div className="text-xs text-slate-300">
+                Recalibrer automatiquement le budget principal sur les revenus &ldquo;salaire&rdquo; du mois courant.
+              </div>
+            </div>
+          </label>
+        )}
       </div>
 
       {error ? <p className="text-sm text-rose-400">{error}</p> : null}

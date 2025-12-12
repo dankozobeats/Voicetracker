@@ -34,6 +34,7 @@ export default function TransactionForm({ budgets }: TransactionFormProps) {
     type: 'expense' as 'income' | 'expense' | 'transfer',
     date: new Date().toISOString().slice(0, 10),
     description: '',
+    paymentSource: 'sg' as 'sg' | 'floa',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +61,7 @@ export default function TransactionForm({ budgets }: TransactionFormProps) {
         type: form.type,
         expenseDate: form.date,
         description: form.description || null,
+        paymentSource: form.paymentSource,
       }),
     });
     const payload = await res.json().catch(() => ({}));
@@ -136,6 +138,36 @@ export default function TransactionForm({ budgets }: TransactionFormProps) {
             placeholder="ex: déjeuner, Uber..."
           />
         </label>
+        <div className="flex flex-col gap-1 text-sm text-slate-300">
+          Source de paiement
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={`flex-1 rounded border px-3 py-2 text-sm ${
+                form.paymentSource === 'sg'
+                  ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-100'
+                  : 'border-slate-700 bg-slate-800 text-slate-200'
+              }`}
+              onClick={() => setForm((prev) => ({ ...prev, paymentSource: 'sg' }))}
+            >
+              SG (immédiat)
+            </button>
+            <button
+              type="button"
+              className={`flex-1 rounded border px-3 py-2 text-sm ${
+                form.paymentSource === 'floa'
+                  ? 'border-amber-500/60 bg-amber-500/15 text-amber-100'
+                  : 'border-slate-700 bg-slate-800 text-slate-200'
+              }`}
+              onClick={() => setForm((prev) => ({ ...prev, paymentSource: 'floa' }))}
+            >
+              Floa (différé)
+            </button>
+          </div>
+          <p className="text-xs text-amber-300">
+            Floa décale la dépense au mois suivant avec un remboursement.
+          </p>
+        </div>
       </div>
 
       {matchedBudget ? (

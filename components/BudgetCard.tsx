@@ -43,6 +43,11 @@ export default function BudgetCard({ budget, depth = 0, onEdit, onDelete, collap
           {budget.category ? <p className="text-xs text-slate-400">Catégorie: {budget.category}</p> : null}
         </div>
         <div className="flex items-center gap-2">
+          {budget.autoSyncFromSalary ? (
+            <span className="rounded-full bg-indigo-500/20 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-100">
+              Auto salaire
+            </span>
+          ) : null}
           {typeof collapsed === 'boolean' ? (
             <button
               type="button"

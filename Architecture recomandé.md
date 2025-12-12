@@ -94,7 +94,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 export async function parseExpense(text: string) {
   const completion = await groq.chat.completions.create({
-    model: "llama-3.1-70b-versatile",
+    model: process.env.GROQ_CHAT_MODEL ?? "llama-3.1-70b-advanced",
     messages: [{
       role: "user",
       content: `Parse this expense: "${text}"\n\nReturn JSON: {"amount": number, "category": string, "description": string}`

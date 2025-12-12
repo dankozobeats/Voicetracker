@@ -28,6 +28,13 @@ export async function middleware(request: NextRequest) {
   }
 
   const pathname = request.nextUrl.pathname;
+
+  if (pathname === '/budget') {
+    const redirectUrl = request.nextUrl.clone();
+    redirectUrl.pathname = '/budgets';
+    return NextResponse.redirect(redirectUrl, { status: 307 });
+  }
+
   if (shouldBypass(pathname) || isPublicRoute(pathname)) {
     return NextResponse.next();
   }

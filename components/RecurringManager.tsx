@@ -83,6 +83,7 @@ export default function RecurringManager({
   const [runMonth, setRunMonth] = useState(() => new Date().toISOString().slice(0, 7));
 
   const isEditing = useMemo(() => !!form.id, [form.id]);
+  const sortedRules = useMemo(() => [...rules], [rules]);
 
   const handleAddSalaryPreset = () => {
     setForm({
@@ -533,7 +534,7 @@ export default function RecurringManager({
 
       {viewMode === 'cards' ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {rules.map((rule) => (
+          {sortedRules.map((rule) => (
             <div key={rule.id} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium text-slate-300">{rule.description || rule.category}</p>
@@ -579,68 +580,113 @@ export default function RecurringManager({
           ))}
         </div>
       ) : showRulesTable ? (
-        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60">
-          <table className="min-w-full divide-y divide-slate-800 text-sm">
-            <thead className="bg-slate-900/80 text-left text-slate-400">
-              <tr>
-                <th className="px-4 py-3">Description</th>
-                <th className="px-4 py-3">Catégorie</th>
-                <th className="px-4 py-3">Montant</th>
-                <th className="px-4 py-3">Paiement</th>
-                <th className="px-4 py-3">Cadence</th>
-                <th className="px-4 py-3">Début</th>
-                <th className="px-4 py-3">Fin</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {rules.map((rule) => (
-                <tr key={rule.id} className="hover:bg-slate-800/40">
-                  <td className="px-4 py-3 text-slate-200">{rule.description || '—'}</td>
-                  <td className="px-4 py-3 text-slate-200">{rule.category}</td>
-                  <td className="px-4 py-3 text-slate-200">{rule.amount.toFixed(2)}€</td>
-                  <td className="px-4 py-3 text-slate-200">
-                    <span
-                      className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                        rule.paymentSource === 'floa'
-                          ? 'bg-amber-500/15 text-amber-200'
-                          : 'bg-emerald-500/15 text-emerald-100'
-                      }`}
-                    >
-                      {rule.paymentSource === 'floa' ? 'Floa (différé)' : 'SG'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-slate-200">{cadenceLabel(rule.cadence)}</td>
-                  <td className="px-4 py-3 text-slate-200">{rule.startDate.slice(0, 10)}</td>
-                  <td className="px-4 py-3 text-slate-200">{rule.endDate ? rule.endDate.slice(0, 10) : '—'}</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleEdit(rule);
-                          setShowForm(true);
-                        }}
-                        className="rounded bg-slate-800 px-3 py-1 text-slate-200"
-                        disabled={loading}
-                      >
-                        Éditer
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(rule.id)}
-                        className="rounded bg-red-600 px-3 py-1 text-white"
-                        disabled={loading}
-                      >
-                        Supprimer
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="block md:hidden space-y-3">
+            {sortedRules.map((rule) => (
+              <div key={rule.id} className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 space-y-2">
+                <div className="flex items-start justify-between gap-4">
+                  <p className="text-sm font-medium text-white">{rule.description || rule.category}</p>
+                  <span className="text-lg font-bold text-white">{rule.amount.toFixed(2)}€</span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-slate-300">
+                  <span>{cadenceLabel(rule.cadence)}</span>
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                      rule.paymentSource === 'floa' ? 'bg-amber-500/20 text-amber-200' : 'bg-emerald-500/20 text-emerald-200'
+                    }`}
+                  >
+                    {rule.paymentSource === 'floa' ? 'Floa' : 'SG'}
+                  </span>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleEdit(rule);
+                      setShowForm(true);
+                    }}
+                    className="rounded bg-slate-800 px-3 py-1 text-sm font-semibold text-slate-200"
+                    disabled={loading}
+                  >
+                    Éditer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(rule.id)}
+                    className="rounded bg-red-600 px-3 py-1 text-sm font-semibold text-white"
+                    disabled={loading}
+                  >
+                    Supprimer
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="hidden md:block">
+            <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60">
+              <table className="min-w-full divide-y divide-slate-800 text-sm">
+                <thead className="bg-slate-900/80 text-left text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3">Description</th>
+                    <th className="px-4 py-3">Catégorie</th>
+                    <th className="px-4 py-3">Montant</th>
+                    <th className="px-4 py-3">Paiement</th>
+                    <th className="px-4 py-3">Cadence</th>
+                    <th className="px-4 py-3">Début</th>
+                    <th className="px-4 py-3">Fin</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {sortedRules.map((rule) => (
+                    <tr key={rule.id} className="hover:bg-slate-800/40">
+                      <td className="px-4 py-3 text-slate-200">{rule.description || '—'}</td>
+                      <td className="px-4 py-3 text-slate-200">{rule.category}</td>
+                      <td className="px-4 py-3 text-slate-200">{rule.amount.toFixed(2)}€</td>
+                      <td className="px-4 py-3 text-slate-200">
+                        <span
+                          className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                            rule.paymentSource === 'floa'
+                              ? 'bg-amber-500/15 text-amber-200'
+                              : 'bg-emerald-500/15 text-emerald-100'
+                          }`}
+                        >
+                          {rule.paymentSource === 'floa' ? 'Floa (différé)' : 'SG'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-200">{cadenceLabel(rule.cadence)}</td>
+                      <td className="px-4 py-3 text-slate-200">{rule.startDate.slice(0, 10)}</td>
+                      <td className="px-4 py-3 text-slate-200">{rule.endDate ? rule.endDate.slice(0, 10) : '—'}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleEdit(rule);
+                              setShowForm(true);
+                            }}
+                            className="rounded bg-slate-800 px-3 py-1 text-slate-200"
+                            disabled={loading}
+                          >
+                            Éditer
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(rule.id)}
+                            className="rounded bg-red-600 px-3 py-1 text-white"
+                            disabled={loading}
+                          >
+                            Supprimer
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       ) : (
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-300">
           Tableau masqué. Cliquez sur "Afficher le tableau" pour le revoir.

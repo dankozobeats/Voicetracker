@@ -32,6 +32,32 @@ const isDeferredTransaction = (tx: Transaction): boolean => {
   return isDeferredPurchase || Boolean(tx.floaRepayment) || metaCategory === 'floa_bank' || metaCategory === 'floa';
 };
 
+const formatDateTime = (value: string) => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value.slice(0, 10);
+  }
+  return parsed.toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const formatPlainDate = (value: string) => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value.slice(0, 10);
+  }
+  return parsed.toLocaleDateString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+};
+
 // -------------------------------------------
 // Composant principal : UI moderne + interactions (delete)
 // -------------------------------------------
@@ -104,6 +130,10 @@ export default function TransactionTable({ transactions }: TransactionTableProps
   const isEmpty = useMemo(() => items.length === 0, [items]);
   const allSelected = useMemo(() => items.length > 0 && selectedIds.size === items.length, [items, selectedIds]);
   const someSelected = useMemo(() => selectedIds.size > 0, [selectedIds]);
+  const sortedTransactions = useMemo(
+    () => [...items].sort((a, b) => (a.date > b.date ? -1 : 1)),
+    [items],
+  );
   const groupedByMonth = useMemo(() => {
     const map = new Map<string, Transaction[]>();
     items.forEach((tx) => {
@@ -438,19 +468,82 @@ export default function TransactionTable({ transactions }: TransactionTableProps
     setEditingId(null);
   };
 
+  function MobileTransactionList({ transactions }: { transactions: Transaction[] }) {
+    if (transactions.length === 0) {
+      return (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-center text-slate-300">
+          Aucune transaction pour le moment.
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-3 px-4 py-4">
+        {transactions.map((tx) => {
+          const typeLabel = tx.type === 'income' ? 'Income' : tx.type === 'transfer' ? 'Transfer' : 'Expense';
+          const typeBadgeClass =
+            tx.type === 'income' ? 'bg-emerald-500/20 text-emerald-200' : 'bg-rose-500/20 text-rose-200';
+          const categoryLabel = tx.categoryInfo?.name ?? tx.category ?? 'Non catégorisé';
+          const descriptionLabel = tx.description || 'Sans description';
+          const amountValue = Number(tx.amount) || 0;
+          const amountColor = amountValue >= 0 ? 'text-emerald-300' : 'text-rose-300';
+          return (
+          <div key={tx.id} className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 space-y-1">
+            <div className="flex items-center justify-between text-[11px] uppercase text-slate-400">
+              <span>{formatPlainDate(tx.date)}</span>
+              <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${typeBadgeClass}`}>{typeLabel}</span>
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-white">{descriptionLabel}</p>
+              <p className="text-xs text-slate-400">{categoryLabel}</p>
+            </div>
+            <div className={`text-right text-base font-bold tracking-wide ${amountColor}`}>
+              {amountValue.toFixed(2)}€
+            </div>
+            <div className="flex items-center justify-between text-[11px]">
+              {tx.paymentSource === 'floa' ? (
+                <span className="rounded-full bg-amber-500/20 px-3 py-1 text-[11px] font-semibold text-amber-200">
+                  Différé
+                </span>
+              ) : (
+                <span className="w-0" aria-hidden />
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200"
+                  onClick={() => handleEdit(tx)}
+                >
+                  Éditer
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-rose-600 px-2 py-1 text-[11px] font-semibold text-white"
+                  onClick={() => handleDelete(tx.id)}
+                >
+                  Supprimer
+                </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60 shadow-xl">
       {/* ------------------------------------------- */}
       {/* Sous-titre compact juste au-dessus du tableau (non sticky pour ne pas masquer l'en-tête) */}
       {/* ------------------------------------------- */}
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3 text-sm text-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-sm text-slate-400">
         <div className="flex items-center gap-3">
           <span>Liste des transactions</span>
           <span className="rounded-full bg-amber-500/20 px-2 py-1 text-[11px] font-semibold text-amber-100">
             Différé total {totalDeferredAll.toFixed(2)}€
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
@@ -481,7 +574,10 @@ export default function TransactionTable({ transactions }: TransactionTableProps
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="block md:hidden">
+        <MobileTransactionList transactions={sortedTransactions} />
+      </div>
+      <div className="hidden md:block overflow-x-auto">
         <table className="min-w-full divide-y divide-slate-800 text-sm">
           <thead className="bg-slate-900/80 text-left text-slate-400">
             <tr>
@@ -543,107 +639,84 @@ export default function TransactionTable({ transactions }: TransactionTableProps
               </tr>
               {!collapsedMonths.has(group.key)
                 ? group.rows.map((tx) => {
-                  // -------------------------------------------
-                  // Badge type coloré : renforce la hiérarchie visuelle
-                  // -------------------------------------------
-                  const badgeClass = typeStyles[tx.type ?? 'expense'] ?? typeStyles.expense;
+                    const badgeClass = typeStyles[tx.type ?? 'expense'] ?? typeStyles.expense;
+                    const categoryBadge = tx.categoryInfo ? (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
+                        style={{
+                          backgroundColor: `${tx.categoryInfo.color ?? '#64748b'}22`,
+                          color: tx.categoryInfo.color ?? '#cbd5e1',
+                        }}
+                      >
+                        {tx.categoryInfo.icon ?? '•'} {tx.categoryInfo.name}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-500">Non catégorisé</span>
+                    );
+                    const formattedDateTime = formatDateTime(tx.date);
+                    const paymentBadge = tx.floaRepayment ? (
+                      <span className="rounded-full bg-red-700/30 px-2 py-1 text-[11px] font-semibold text-red-200">
+                        Remboursement Floa
+                      </span>
+                    ) : tx.paymentSource === 'floa' ? (
+                      <span className="rounded-full bg-amber-500/20 px-2 py-1 text-[11px] font-semibold text-amber-100">
+                        Floa (différé)
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-100">
+                        SG
+                      </span>
+                    );
 
-                  // -------------------------------------------
-                  // Badge catégorie : couleur translucide + icône pour repère rapide
-                  // -------------------------------------------
-                  const categoryBadge = tx.categoryInfo ? (
-                    <span
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
-                      style={{
-                        backgroundColor: `${tx.categoryInfo.color ?? '#64748b'}22`,
-                        color: tx.categoryInfo.color ?? '#cbd5e1',
-                      }}
-                    >
-                      {tx.categoryInfo.icon ?? '•'} {tx.categoryInfo.name}
-                    </span>
-                  ) : (
-                    <span className="text-xs text-slate-500">Non catégorisé</span>
-                  );
-
-                  const formattedDateTime = (() => {
-                    const parsed = new Date(tx.date);
-                    if (Number.isNaN(parsed.getTime())) return tx.date.slice(0, 10);
-                    return parsed.toLocaleString('fr-FR', {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    });
-                  })();
-                  const paymentBadge = tx.floaRepayment ? (
-                    <span className="rounded-full bg-red-700/30 px-2 py-1 text-[11px] font-semibold text-red-200">
-                      Remboursement Floa
-                    </span>
-                  ) : tx.paymentSource === 'floa' ? (
-                    <span className="rounded-full bg-amber-500/20 px-2 py-1 text-[11px] font-semibold text-amber-100">
-                      Floa (différé)
-                    </span>
-                  ) : (
-                    <span className="rounded-full bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-100">SG</span>
-                  );
-
-                  return (
-                    <tr key={tx.id} className="hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 py-3">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 accent-indigo-500"
-                          checked={selectedIds.has(tx.id)}
-                          onChange={() => toggleOne(tx.id)}
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-slate-200">{formattedDateTime}</td>
-                      <td className="px-4 py-3">
-                        <span className={`rounded-full px-2 py-1 text-xs font-semibold capitalize ${badgeClass}`}>
-                          {tx.type ?? 'expense'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">{categoryBadge}</td>
-                      <td className="px-4 py-3 text-slate-300">
-                        <div className="flex items-center gap-2">
-                          {paymentBadge}
-                          <span>{tx.description || '—'}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-right text-white font-bold">{tx.amount.toFixed(2)}€</td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex justify-end gap-2">
-                          {/* ------------------------------------------- */}
-                          {/* Bouton Éditer : ouvre le formulaire inline */}
-                          {/* ------------------------------------------- */}
-                          <button
-                            type="button"
-                            className="rounded bg-slate-800 px-3 py-1 text-xs text-slate-100 hover:bg-slate-700"
-                            onClick={() => handleEdit(tx)}
+                    return (
+                      <tr key={tx.id} className="hover:bg-slate-800/50 transition-colors">
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-indigo-500"
+                            checked={selectedIds.has(tx.id)}
+                            onChange={() => toggleOne(tx.id)}
+                          />
+                        </td>
+                        <td className="px-4 py-3 text-slate-200">{formattedDateTime}</td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`rounded-full px-2 py-1 text-xs font-semibold capitalize ${badgeClass}`}
                           >
-                            Éditer
-                          </button>
-                          {/* ------------------------------------------- */}
-                          {/* Bouton Supprimer : déclenche handleDelete avec feedback toast */}
-                          {/* ------------------------------------------- */}
-                          <button
-                            type="button"
-                            className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-500"
-                            onClick={() => handleDelete(tx.id)}
-                          >
-                            Supprimer
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
+                            {tx.type ?? 'expense'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">{categoryBadge}</td>
+                        <td className="px-4 py-3 text-slate-300">
+                          <div className="flex items-center gap-2">
+                            {paymentBadge}
+                            <span>{tx.description || '—'}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right text-white font-bold">{tx.amount.toFixed(2)}€</td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              className="rounded bg-slate-800 px-3 py-1 text-xs text-slate-100 hover:bg-slate-700"
+                              onClick={() => handleEdit(tx)}
+                            >
+                              Éditer
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded bg-rose-600 px-3 py-1 text-xs text-white hover:bg-rose-500"
+                              onClick={() => handleDelete(tx.id)}
+                            >
+                              Supprimer
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 : null}
 
-            {/* ------------------------------------------- */}
-            {/* État vide : message centré si aucune transaction */}
-            {/* ------------------------------------------- */}
               {isEmpty ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-8 text-center text-slate-500">

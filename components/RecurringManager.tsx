@@ -107,10 +107,11 @@ export default function RecurringManager({
     const refreshedRules = payload.rules ?? [];
     const refreshedUpcoming = payload.upcoming ?? [];
     const refreshedMonthSummaries = payload.monthSummaries ?? [];
+    const refreshedTotal = payload.total ?? refreshedMonthSummaries[0]?.sgChargesTotal ?? 0;
     setRules(refreshedRules);
     setUpcoming(refreshedUpcoming);
     setMonthSummaries(refreshedMonthSummaries);
-    setTotal(computeNextCycleTotal(refreshedUpcoming, refreshedMonthSummaries));
+    setTotal(refreshedTotal);
   };
 
   useEffect(() => {
@@ -258,29 +259,6 @@ export default function RecurringManager({
         return cadence;
     }
   };
-
-  const computeNextCycleTotal = (instances: RecurringInstance[], summaries?: RecurringMonthSummary[]) => {
-    // Si on dispose des summaries (forecast), on ne garde que les charges SG du mois à venir
-    // pour l'affichage "Charges prévues (prochain mois)".
-    if (summaries?.length) {
-      return summaries[0]?.sgChargesTotal ?? summaries[0]?.expenses ?? 0;
-    }
-    if (!instances.length) return 0;
-    const sorted = [...instances].sort((a, b) => (a.dueDate > b.dueDate ? 1 : -1));
-    const firstMonth = sorted[0].dueDate.slice(0, 7); // YYYY-MM
-    return sorted
-      .filter(
-        (instance) =>
-          instance.direction === 'expense' &&
-          instance.category !== 'floa_bank' &&
-          instance.dueDate.slice(0, 7) === firstMonth,
-      )
-      .reduce((sum, instance) => sum + instance.amount, 0);
-  };
-
-  useEffect(() => {
-    setTotal(computeNextCycleTotal(upcoming, monthSummaries));
-  }, [upcoming, monthSummaries]);
 
   // Total des remboursements/charges différées pour le mois à venir (floa_bank).
   const deferredNextMonth = useMemo(() => {

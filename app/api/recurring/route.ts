@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 
-import { RecurringService } from '@/lib/recurring';
+import { RecurringService, getFixedChargesReferenceMonth } from '@/lib/recurring';
 
 const recurringService = new RecurringService();
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status });
@@ -14,12 +14,18 @@ export async function GET(): Promise<NextResponse> {
       data: { session },
     } = await supabase.auth.getSession();
     const userId = session?.user?.id ?? process.env.SUPABASE_DEFAULT_USER_ID ?? process.env.NEXT_PUBLIC_SUPABASE_DEFAULT_USER_ID;
+    const baseMonthKey = getFixedChargesReferenceMonth(request.nextUrl.searchParams.get('baseMonth'));
     const rules = await recurringService.listRules(userId);
-    const forecast = await recurringService.generateUpcomingWithCarryover(rules, userId);
+    const forecast = await recurringService.generateUpcomingWithCarryover(rules, userId, undefined, baseMonthKey);
     const upcoming = forecast.instances;
-    const total =
-      forecast.monthSummaries[0]?.sgChargesTotal ?? recurringService.computeMonthlyFixedCharges(upcoming);
-    return json({ rules, upcoming, total, monthSummaries: forecast.monthSummaries });
+    const total = forecast.monthSummaries[0]?.sgChargesTotal ?? 0;
+    return json({
+      rules,
+      upcoming,
+      total,
+      monthSummaries: forecast.monthSummaries,
+      fixedChargesBaseMonth: forecast.fixedChargesBaseMonth,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to fetch recurring rules';
     return json({ error: message }, 400);

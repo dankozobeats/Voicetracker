@@ -40,7 +40,12 @@ describe('Forecast 24 months with SG/Floa/overdraft', () => {
   });
 
   it('SG-only scenario matches same-month charges', async () => {
-    const { monthSummaries } = await service.generateUpcomingWithCarryover([rule({ paymentSource: 'sg' })], 'user-1', 2);
+    const { monthSummaries } = await service.generateUpcomingWithCarryover(
+      [rule({ paymentSource: 'sg' })],
+      'user-1',
+      2,
+      '2024-12',
+    );
     const first = monthSummaries[0];
     expect(first.sgChargesTotal).toBe(100);
     expect(first.floaRepaymentsTotal).toBe(0);
@@ -48,7 +53,12 @@ describe('Forecast 24 months with SG/Floa/overdraft', () => {
   });
 
   it('Floa-only scenario shifts to next month repayment', async () => {
-    const { monthSummaries } = await service.generateUpcomingWithCarryover([rule({ paymentSource: 'floa' })], 'user-1', 2);
+    const { monthSummaries } = await service.generateUpcomingWithCarryover(
+      [rule({ paymentSource: 'floa' })],
+      'user-1',
+      2,
+      '2024-12',
+    );
     const first = monthSummaries[0];
     const second = monthSummaries[1];
     expect(first.sgChargesTotal).toBe(0);
@@ -73,6 +83,7 @@ describe('Forecast 24 months with SG/Floa/overdraft', () => {
       [rule({ amount: 120, paymentSource: 'sg' }), rule({ amount: 80, paymentSource: 'floa', id: 'floa-1' })],
       'user-1',
       3,
+      '2024-12',
     );
     const july = monthSummaries.find((m) => m.month === '2024-07');
     expect(july?.sgChargesTotal).toBe(120);
@@ -84,6 +95,7 @@ describe('Forecast 24 months with SG/Floa/overdraft', () => {
       [rule({ amount: 300, paymentSource: 'sg' })],
       'user-1',
       2,
+      '2024-12',
     );
     const june = monthSummaries[0];
     const july = monthSummaries[1];

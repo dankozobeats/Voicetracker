@@ -442,9 +442,16 @@ export class RecurringService {
     rules: RecurringRule[],
     userId?: string,
     lookAheadMonths = RECURRING_LOOKAHEAD_MONTHS,
-  ): Promise<{ instances: RecurringInstance[]; monthSummaries: RecurringMonthSummary[] }> {
+    baseMonthKey?: string,
+  ): Promise<{
+    instances: RecurringInstance[];
+    monthSummaries: RecurringMonthSummary[];
+    fixedChargesBaseMonth: string;
+  }> {
     const baseInstances = this.generateUpcomingInstances(rules, lookAheadMonths);
     const monthKeys = this.buildMonthKeys(lookAheadMonths);
+    const referenceMonthKey = baseMonthKey ?? getFixedChargesReferenceMonth();
+    const fixedChargesBaseRules = computeFixedChargesBaseForMonth(rules, referenceMonthKey);
     const startingOverdraft = await this.computeStartingOverdraft(userId);
     const floaRepaymentTx = await this.fetchFloaRepaymentTransactions(monthKeys, userId);
 
@@ -480,14 +487,8 @@ export class RecurringService {
 
     for (let idx = 0; idx < monthKeys.length; idx += 1) {
       const month = monthKeys[idx];
-      const sgExpenses = instances
-        .filter(
-          (instance) =>
-            instance.direction !== 'income' &&
-            instance.dueDate.slice(0, 7) === month &&
-            instance.category !== 'floa_bank',
-        )
-        .reduce((sum, instance) => sum + instance.amount, 0);
+      const projectedRulesForMonth = projectFixedChargesRulesForMonth(fixedChargesBaseRules, month);
+      const sgExpenses = projectedRulesForMonth.reduce((sum, rule) => sum + rule.amount, 0);
       const floaRepayments = instances
         .filter((instance) => instance.direction !== 'income' && instance.dueDate.slice(0, 7) === month && instance.category === 'floa_bank')
         .reduce((sum, instance) => sum + instance.amount, 0);
@@ -550,7 +551,7 @@ export class RecurringService {
       overdraftRemaining = nextOverdraft;
     }
 
-    return { instances, monthSummaries };
+    return { instances, monthSummaries, fixedChargesBaseMonth: referenceMonthKey };
   }
 
   /**
@@ -600,4 +601,66 @@ export class RecurringService {
 
     return next;
   }
+}
+
+const MONTH_KEY_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+function buildMonthRange(monthKey: string) {
+  const match = MONTH_KEY_PATTERN.exec(monthKey);
+  if (!match) {
+    throw new Error(`Invalid month key: ${monthKey}`);
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+  return { start, end };
+}
+
+/**
+ * Build the SG fixed-charge base for a reference month (typically December) while explicitly
+ * excluding Floa rules or repayments so the projection stays stable across months.
+ */
+export function computeFixedChargesBaseForMonth(rules: RecurringRule[], baseMonthKey: string): RecurringRule[] {
+  const { start, end } = buildMonthRange(baseMonthKey);
+  return rules.filter((rule) => {
+    if (rule.direction !== 'expense') return false;
+    if (rule.paymentSource !== 'sg') return false;
+    const startDate = new Date(rule.startDate);
+    const endDate = rule.endDate ? new Date(rule.endDate) : null;
+    return startDate <= end && (!endDate || endDate >= start);
+  });
+}
+
+/**
+ * Given the stable fixed-charge base, project the active rules for a target month
+ * by honoring each rule's start and end boundaries.
+ */
+export function projectFixedChargesRulesForMonth(baseRules: RecurringRule[], targetMonthKey: string): RecurringRule[] {
+  const { start, end } = buildMonthRange(targetMonthKey);
+  return baseRules.filter((rule) => {
+    const startDate = new Date(rule.startDate);
+    const endDate = rule.endDate ? new Date(rule.endDate) : null;
+    return startDate <= end && (!endDate || endDate >= start);
+  });
+}
+
+const BASE_MONTH_ENV_VARS = ['RECURRING_FIXED_CHARGES_BASE_MONTH', 'NEXT_PUBLIC_RECURRING_FIXED_CHARGES_BASE_MONTH'];
+
+/**
+ * Determine the reference month used to build the fixed-charge base (defaulting to December),
+ * allowing overrides via environment variables for deterministic forecasts.
+ */
+export function getFixedChargesReferenceMonth(candidate?: string | null): string {
+  if (typeof candidate === 'string' && MONTH_KEY_PATTERN.test(candidate)) {
+    return candidate;
+  }
+  for (const envKey of BASE_MONTH_ENV_VARS) {
+    const value = process.env[envKey];
+    if (typeof value === 'string' && MONTH_KEY_PATTERN.test(value)) {
+      return value;
+    }
+  }
+  const now = new Date();
+  return `${now.getUTCFullYear()}-12`;
 }

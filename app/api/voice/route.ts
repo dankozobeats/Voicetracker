@@ -183,7 +183,11 @@ async function insertTransaction(
 export async function POST(request: Request): Promise<Response> {
   let rateLimitHeaders: Record<string, string> | undefined;
   try {
-    const supabase = createRouteHandlerClient({ cookies });
+    const cookieStore = cookies();
+    // The Supabase route handler client inspects `context.cookies()` and expects a store
+    // with a working `.get` method; passing the helper directly caused
+    // "this.context.cookies(...).get is not a function" in production on Vercel.
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
     const {
       data: { session },
       error: sessionError,

@@ -2,6 +2,8 @@
 
 import { Bell, Menu, PanelLeftClose, PanelRight, User } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 
 import { NAV_ITEMS } from '@/lib/navigation';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -29,6 +31,13 @@ export default function TopBar({
   userEmail = 'user@example.com',
 }: TopBarProps) {
   const currentNav = NAV_ITEMS.find((item) => pathname.startsWith(item.href));
+  const router = useRouter();
+  const supabase = createClientComponentClient();
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.replace('/auth/login');
+  };
 
   return (
     <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white/80 px-4 py-3 backdrop-blur transition-colors dark:border-slate-800 dark:bg-slate-900/80">
@@ -76,12 +85,13 @@ export default function TopBar({
             <Link href="/settings" className="block rounded-lg px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800/60">
               Paramètres
             </Link>
-            <button
-              type="button"
-              className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800/60"
-            >
-              Se déconnecter
-            </button>
+          <button
+            type="button"
+            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800/60"
+            onClick={handleLogout}
+          >
+            Se déconnecter
+          </button>
           </div>
         </details>
       </div>

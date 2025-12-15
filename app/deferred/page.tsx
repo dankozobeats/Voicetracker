@@ -161,34 +161,36 @@ export default async function DeferredPage({
   })();
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-        <div className="flex items-center justify-between">
+        <div className="space-y-4">
           <div>
             <p className="text-xs uppercase tracking-wide text-slate-500">Différé</p>
             <h1 className="text-xl font-semibold text-white">Paiements différés en attente</h1>
             <p className="text-sm text-slate-400">Achats Floa de {monthLabel} (remboursement le mois suivant).</p>
           </div>
-          <form method="get" className="flex items-center gap-2">
-            <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-400">
-              Mois
-              <input
-                type="month"
-                name="month"
-                defaultValue={currentMonth}
-                className="min-w-[150px] rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-white focus:border-indigo-500 focus:outline-none"
-              />
-            </label>
-            <button
-              type="submit"
-              className="rounded bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
-            >
-              Afficher
-            </button>
-          </form>
-          <div className="rounded-lg bg-amber-500/15 px-3 py-2 text-right">
-            <p className="text-xs text-amber-200">Total mois {currentMonth}</p>
-            <p className="text-xl font-bold text-amber-100">{total.toFixed(2)}€</p>
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between md:gap-0 md:min-w-0">
+            <form method="get" className="flex w-full flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+              <label className="flex flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-400 w-full sm:w-auto">
+                Mois
+                <input
+                  type="month"
+                  name="month"
+                  defaultValue={currentMonth}
+                  className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                />
+              </label>
+              <button
+                type="submit"
+                className="w-full rounded bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 sm:w-auto"
+              >
+                Afficher
+              </button>
+            </form>
+            <div className="rounded-lg bg-amber-500/15 px-3 py-2 text-left text-amber-100 w-full max-w-full md:w-auto md:max-w-none">
+              <p className="text-xs text-amber-200">Total mois {currentMonth}</p>
+              <p className="text-xl font-bold">{total.toFixed(2)}€</p>
+            </div>
           </div>
         </div>
       </div>
@@ -198,30 +200,67 @@ export default async function DeferredPage({
           Aucun paiement différé trouvé pour {monthLabel}.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60 shadow">
-          <table className="min-w-full divide-y divide-slate-800 text-sm">
-            <thead className="bg-slate-900/80 text-left text-slate-400">
-              <tr>
-                <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Description</th>
-                <th className="px-4 py-3">Catégorie</th>
-                <th className="px-4 py-3 text-right">Montant</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {deferred.map((tx) => (
-                <tr key={tx.id} className="hover:bg-slate-800/40">
-                  <td className="px-4 py-2 text-slate-200">{tx.date.slice(0, 10)}</td>
-                  <td className="px-4 py-2 text-white">{tx.description || 'Sans description'}</td>
-                  <td className="px-4 py-2 text-slate-300">
-                    {tx.categoryInfo?.name ?? (tx.metadata as any)?.category ?? tx.category}
-                  </td>
-                  <td className="px-4 py-2 text-right font-semibold text-amber-100">{tx.amount.toFixed(2)}€</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          {/* ================= MOBILE ================= */}
+          <div className="md:hidden space-y-3 pb-28 px-3 w-full max-w-full">
+            {deferred.map((tx) => (
+              <div
+                key={tx.id}
+                className="w-full max-w-full rounded-2xl border border-slate-800 bg-slate-900/60 px-4 py-4 shadow-lg shadow-black/20"
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between min-w-0">
+                  <div className="min-w-0">
+                    <p className="truncate break-words text-sm font-medium text-white">
+                      {tx.description || 'Sans description'}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">{tx.date.slice(0, 10)}</p>
+                  </div>
+
+                  <div className="flex flex-col items-end gap-1 text-right min-w-0">
+                    <p className="text-sm font-semibold text-amber-200">{tx.amount.toFixed(2)}€</p>
+                    <span className="inline-flex rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                      Différé
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className="inline-block rounded-full bg-slate-800 px-2 py-0.5 text-[10px] text-slate-300">
+                    {tx.categoryInfo?.name ?? tx.category ?? 'Autre'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* ================= DESKTOP ================= */}
+          <div className="hidden md:block">
+            <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60 shadow">
+              <table className="min-w-full divide-y divide-slate-800 text-sm">
+                <thead className="bg-slate-900/80 text-left text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Description</th>
+                    <th className="px-4 py-3">Catégorie</th>
+                    <th className="px-4 py-3 text-right">Montant</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {deferred.map((tx) => (
+                    <tr key={tx.id} className="hover:bg-slate-800/40">
+                      <td className="px-4 py-2 text-slate-200">{tx.date.slice(0, 10)}</td>
+                      <td className="px-4 py-2 text-white">{tx.description || 'Sans description'}</td>
+                      <td className="px-4 py-2 text-slate-300">
+                        {tx.categoryInfo?.name ?? (tx.metadata as any)?.category ?? tx.category}
+                      </td>
+                      <td className="px-4 py-2 text-right font-semibold text-amber-100">{tx.amount.toFixed(2)}€</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

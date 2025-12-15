@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { createBrowserSupabaseClient, type Session, type SupabaseClient, type User } from '@supabase/auth-helpers-nextjs';
 import { SessionContextProvider } from '@supabase/auth-helpers-react';
 
@@ -17,6 +18,8 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
  * It also forwards the Supabase client through context for easy consumption in UI layers.
  */
 export default function AuthProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [supabase] = useState(() => createBrowserSupabaseClient());
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -32,8 +35,18 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
       if (!isMounted) return;
+      if (event === 'TOKEN_REFRESH_FAILED') {
+        await supabase.auth.signOut().catch(() => undefined);
+        if (pathname && !pathname.startsWith('/auth')) {
+          router.replace('/auth/login');
+        }
+      } else if (event === 'SIGNED_OUT') {
+        if (pathname && !pathname.startsWith('/auth')) {
+          router.replace('/auth/login');
+        }
+      }
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
     });
@@ -42,7 +55,7 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase]);
+  }, [pathname, router, supabase]);
 
   const value = useMemo(
     () => ({
